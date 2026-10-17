@@ -1,0 +1,17 @@
+{
+  "name": "code-intel-action",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "GitHub composite action: detects languages, installs pinned SCIP indexers, builds per-language SCIP indexes, and uploads them to rhumb-code-intel via its CI upload door.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rhumb-org/code-intel-upload-action.git"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test __tests__/*.test.mjs"
+  }
+}

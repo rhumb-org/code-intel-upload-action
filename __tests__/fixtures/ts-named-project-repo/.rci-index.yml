@@ -1,0 +1,4 @@
+roots:
+  typescript:
+    - path: .
+      project: tsconfig.graph.json

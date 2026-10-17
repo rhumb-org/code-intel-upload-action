@@ -1,0 +1,73 @@
+name: 'rci Code Intel: index & upload'
+description: >-
+  Detects the languages present at the checked-out tree, installs the
+  exact pinned SCIP indexers (verifying integrity before install), builds
+  a SCIP index per detected (language, root), and uploads each one to
+  rhumb-code-intel through its CI upload door. Fail-soft by default: an
+  indexing or upload failure does not fail the caller's workflow unless
+  the caller opts in with fail-on-error.
+author: 'rhumb-org'
+
+inputs:
+  base-url:
+    description: >-
+      Base URL of the Rhumb Code Intel service. It receives this workflow's
+      OIDC token and the index uploads; leave the default unless Rhumb
+      directs otherwise.
+    required: false
+    default: 'https://rhumb.sh'
+  roots-override:
+    description: >-
+      JSON object overriding detected/declared roots, e.g.
+      {"typescript":["packages/api"],"python":["services/worker"]}. A
+      language key present here fully replaces that language's roots
+      (an explicit [] skips it); a language absent here keeps its
+      .rci-index.yml or auto-detected roots. Takes precedence over both.
+    required: false
+    default: ''
+  dry-run:
+    description: >-
+      When true, resolve languages/roots and print the request sequence a
+      real run would make. No network calls, no installs, no indexing.
+    required: false
+    default: 'false'
+
+  fail-on-error:
+    description: >-
+      When true, the step exits non-zero after every language/root has
+      been attempted and recorded, if any of them failed to index or
+      upload (or roots/pins could not be resolved). Default false: the
+      action is fail-soft and does not fail the caller's workflow. Opt in
+      only from a workflow that is not a required check, so a broken
+      upload shows as a red check without blocking merges.
+    required: false
+    default: 'false'
+
+outputs:
+  upload-ids:
+    description: 'JSON object mapping "<language> @ <root>" -> upload id (or null when skipped/failed before an id was minted).'
+    value: ${{ steps.rci.outputs.upload-ids }}
+  bytes:
+    description: 'JSON object mapping "<language> @ <root>" -> {raw_bytes, compressed_bytes}.'
+    value: ${{ steps.rci.outputs.bytes }}
+  durations-ms:
+    description: 'JSON object mapping "<language> @ <root>" -> total pipeline duration in milliseconds.'
+    value: ${{ steps.rci.outputs.durations-ms }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node 24
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: '24'
+
+    - name: Detect, install, index, upload
+      id: rci
+      shell: bash
+      env:
+        RCI_BASE_URL: ${{ inputs.base-url }}
+        RCI_ROOTS_OVERRIDE: ${{ inputs.roots-override }}
+        RCI_DRY_RUN: ${{ inputs.dry-run }}
+        RCI_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: node "${{ github.action_path }}/scripts/run.mjs"

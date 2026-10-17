@@ -1,0 +1,5 @@
+roots:
+  typescript:
+    - packages/api
+  python:
+    - services/worker

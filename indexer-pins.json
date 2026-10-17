@@ -1,0 +1,33 @@
+{
+  "scip-typescript": {
+    "npmPackage": "@sourcegraph/scip-typescript",
+    "version": "0.4.0",
+    "integrity": "sha512-k+AtsrqmS41Sd5qjkZlHcmvoSQIvBOonRj4jpgp0KNFM6aqvMGpdSuPUqrUcg8ENTKjUbfaUVszgQwq3bCOvwA=="
+  },
+  "scip-python": {
+    "npmPackage": "@sourcegraph/scip-python",
+    "version": "0.6.6",
+    "integrity": "sha512-qoKL1Rggg0o5newAFbCFAKlS0AjWxG5MA+mC28BtgxOv0DhO4zdL8u7151FxEppDpXMVvm7+yXSjXotoVH9cMQ=="
+  },
+  "rust-analyzer": {
+    "releaseTag": "2026-07-06",
+    "platforms": {
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-06/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+        "sha256": "2fb596e12676e512de5dbf1c322dd591127ee089a1cca47995605593f2fc8850"
+      },
+      "aarch64-unknown-linux-gnu": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-06/rust-analyzer-aarch64-unknown-linux-gnu.gz",
+        "sha256": "7e2627d96c6f1614115d212b61fd5f8dc9279853054b800f2b023c883e3ae056"
+      },
+      "x86_64-apple-darwin": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-06/rust-analyzer-x86_64-apple-darwin.gz",
+        "sha256": "3a6bc5b42c27d3f8d308dacb25fdbe9bba0577be2970500cdb936e53c21c3496"
+      },
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-06/rust-analyzer-aarch64-apple-darwin.gz",
+        "sha256": "0fb2229496105666460d22d062a55e154c862bb8004c464a38c6ffaff6fd68fe"
+      }
+    }
+  }
+}

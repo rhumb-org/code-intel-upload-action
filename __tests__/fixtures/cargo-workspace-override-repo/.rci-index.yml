@@ -1,0 +1,4 @@
+roots:
+  rust:
+    - crates/a
+    - crates/b
