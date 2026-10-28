@@ -298,7 +298,7 @@ the restore and project load use the SDK your workflow sets up -- the one your
       - uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
-      - uses: rhumb-org/code-intel-action@v1
+      - uses: rhumb-org/code-intel-upload-action@v1
 ```
 
 For each root the action runs `dotnet restore` on its solution (every `*.sln`
