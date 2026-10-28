@@ -9,6 +9,7 @@
  */
 
 import { mkdir, writeFile, chmod } from 'node:fs/promises';
+import { accessSync, constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -20,26 +21,25 @@ const execFile = promisify(execFileCb);
 
 export class IndexerIntegrityError extends Error {}
 
-const RUST_ANALYZER_RELEASE_HOST = 'github.com';
+const RELEASE_HOST = 'github.com';
 const RUST_ANALYZER_RELEASE_PATH_PREFIX = '/rust-lang/rust-analyzer/releases/download/';
+const SCIP_JAVA_RELEASE_PATH_PREFIX = '/scip-code/scip-java/releases/download/';
 
 /**
  * The sha256 pin already guarantees which bytes run; this keeps the download
- * itself pointed at the official rust-analyzer releases and nowhere else,
+ * itself pointed at the indexer's official GitHub releases and nowhere else,
  * so a mistyped or tampered pin entry cannot make the runner fetch from an
  * arbitrary host.
  */
-function assertOfficialRustAnalyzerUrl(rawUrl) {
+function assertOfficialReleaseUrl(rawUrl, indexer, pathPrefix) {
   let url;
   try {
     url = new URL(rawUrl);
   } catch {
-    throw new Error(`rust-analyzer pin url is not a valid URL: ${rawUrl}`);
+    throw new Error(`${indexer} pin url is not a valid URL: ${rawUrl}`);
   }
-  if (url.protocol !== 'https:' || url.host !== RUST_ANALYZER_RELEASE_HOST || !url.pathname.startsWith(RUST_ANALYZER_RELEASE_PATH_PREFIX)) {
-    throw new Error(
-      `rust-analyzer pin url must be an https://${RUST_ANALYZER_RELEASE_HOST}${RUST_ANALYZER_RELEASE_PATH_PREFIX}* release asset, got ${rawUrl}`,
-    );
+  if (url.protocol !== 'https:' || url.host !== RELEASE_HOST || !url.pathname.startsWith(pathPrefix)) {
+    throw new Error(`${indexer} pin url must be an https://${RELEASE_HOST}${pathPrefix}* release asset, got ${rawUrl}`);
   }
 }
 
@@ -105,7 +105,7 @@ export async function installRustAnalyzer(pin, binDir, platformKey, fetchImpl = 
   if (platform === undefined) {
     throw new Error(`rust-analyzer pin has no entry for platform "${platformKey}"`);
   }
-  assertOfficialRustAnalyzerUrl(platform.url);
+  assertOfficialReleaseUrl(platform.url, 'rust-analyzer', RUST_ANALYZER_RELEASE_PATH_PREFIX);
 
   const resp = await fetchImpl(platform.url, { signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) });
   if (!resp.ok) throw new Error(`rust-analyzer asset fetch failed: ${platform.url} -> ${resp.status}`);
@@ -124,6 +124,84 @@ export async function installRustAnalyzer(pin, binDir, platformKey, fetchImpl = 
   await writeFile(binPath, binBuf);
   await chmod(binPath, 0o755);
   return binPath;
+}
+
+/**
+ * Downloads the pinned scip-java release asset (one platform-independent
+ * self-executing jar), verifies its sha256 before writing anything, and
+ * marks it executable. It runs on the runner's own JDK -- see `assertJdk`.
+ */
+export async function installScipJava(pin, binDir, fetchImpl = fetch) {
+  assertOfficialReleaseUrl(pin.url, 'scip-java', SCIP_JAVA_RELEASE_PATH_PREFIX);
+
+  const resp = await fetchImpl(pin.url, { signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) });
+  if (!resp.ok) throw new Error(`scip-java asset fetch failed: ${pin.url} -> ${resp.status}`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+
+  const actual = sha256HexOfBuffer(buf);
+  if (actual !== pin.sha256) {
+    throw new IndexerIntegrityError(`scip-java ${pin.version}: downloaded asset sha256 ${actual} does not match pinned ${pin.sha256}`);
+  }
+
+  await mkdir(binDir, { recursive: true });
+  const binPath = path.join(binDir, 'scip-java');
+  await writeFile(binPath, buf);
+  await chmod(binPath, 0o755);
+  return binPath;
+}
+
+/** scip-java 0.13 does not run on an older JDK. */
+export const MIN_JDK_MAJOR = 17;
+
+/**
+ * Major version from `java -version` output: `"21.0.2"` -> 21, `"17"` -> 17,
+ * the legacy `"1.8.0_392"` -> 8. `null` when no version string is present.
+ */
+export function parseJdkMajor(versionOutput) {
+  const match = /version "(\d+)(?:\.(\d+))?/.exec(versionOutput);
+  if (match === null) return null;
+  const first = Number(match[1]);
+  return first === 1 && match[2] !== undefined ? Number(match[2]) : first;
+}
+
+function isExecutable(file) {
+  try {
+    accessSync(file, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Confirms the runner has a JDK scip-java can use, picking the `java` the
+ * scip-java launcher itself will pick: `$JAVA_HOME/bin/java` when executable,
+ * else `java` on PATH. The action installs no JDK -- the repository's build
+ * needs its own, set up by its workflow -- so a missing or too-old one fails
+ * the pair here, before the download, with the reason.
+ */
+export async function assertJdk({ env = process.env, execFileImpl = execFile } = {}) {
+  const javaHome = env.JAVA_HOME;
+  const javaCmd = javaHome && isExecutable(path.join(javaHome, 'bin', 'java')) ? path.join(javaHome, 'bin', 'java') : 'java';
+  const setupHint = 'add actions/setup-java (JDK 17 or newer) to the workflow before this step';
+
+  let output;
+  try {
+    const { stdout, stderr } = await execFileImpl(javaCmd, ['-version'], { env, timeout: API_TIMEOUT_MS });
+    output = `${stderr ?? ''}\n${stdout ?? ''}`;
+  } catch (err) {
+    if (err?.code === 'ENOENT') throw new Error(`Java indexing needs a JDK ${MIN_JDK_MAJOR}+ on the runner (JAVA_HOME or PATH) and none was found; ${setupHint}`);
+    throw new Error(`Java indexing could not run \`${javaCmd} -version\`: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const major = parseJdkMajor(output);
+  if (major === null) {
+    throw new Error(`Java indexing could not read the JDK version from \`${javaCmd} -version\`; ${setupHint}`);
+  }
+  if (major < MIN_JDK_MAJOR) {
+    throw new Error(`Java indexing needs JDK ${MIN_JDK_MAJOR} or newer, but the runner's JDK is ${major}; ${setupHint}`);
+  }
+  return major;
 }
 
 const PLATFORM_KEY_BY_NODE_TRIPLE = {

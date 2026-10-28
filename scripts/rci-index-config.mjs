@@ -16,12 +16,11 @@
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { LANGUAGES, KNOWN_LANGUAGES } from './languages.mjs';
 
-export const KNOWN_LANGUAGES = ['typescript', 'python', 'rust'];
-
-/** Only scip-typescript takes a project-file argument; python and rust
- *  indexers resolve their project from the root directory alone. */
-const LANGUAGES_WITH_PROJECT_FILE = ['typescript'];
+/** Only scip-typescript takes a project-file argument; the other indexers
+ *  resolve their project from the root directory alone. */
+const LANGUAGES_WITH_PROJECT_FILE = KNOWN_LANGUAGES.filter((lang) => LANGUAGES[lang].acceptsProject);
 
 /**
  * Normalizes one root entry -- a bare path string or `{path, project?}`,

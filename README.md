@@ -11,7 +11,8 @@ ran on.
 On each run the action:
 
 1. detects the languages and project roots in the checked-out tree
-   (TypeScript, Python, Rust -- see [Root detection](#root-detection));
+   (TypeScript, Python, Rust -- see [Root detection](#root-detection); Java
+   only where you declare it -- see [Java](#java));
 2. creates an upload with Rhumb Code Intel, authenticating with your
    workflow's GitHub OIDC token (no long-lived secret);
 3. installs the SCIP indexer for each language at the exact version pinned in
@@ -66,12 +67,19 @@ and install any dependencies your language's indexer needs to resolve types
 - **Runner.** Linux or macOS, x64 or arm64 (rust-analyzer ships builds for
   exactly these four targets; Windows runners are not supported). The
   GitHub-hosted `ubuntu-latest` runner is the tested configuration.
+- **JDK, for Java only.** JDK 17 or newer on the runner (`JAVA_HOME` or
+  `PATH`); see [Java](#java). The action installs none.
+- **Maven or Gradle, for Java only.** Maven, or Gradle 8 or newer -- the
+  repository's own wrapper (`mvnw`, `gradlew`) when it has one.
 - **Node.js.** The action installs Node 24 itself with `actions/setup-node`;
   you do not need to provide one. Running the scripts directly requires
   Node 22 or newer.
 - **Network.** Outbound HTTPS to `registry.npmjs.org` (TypeScript and Python
-  indexers), `github.com` (rust-analyzer release downloads), the OIDC token
-  endpoint GitHub provides, and Rhumb Code Intel (`rhumb.sh` by default).
+  indexers), `github.com` (rust-analyzer and scip-java release downloads),
+  the OIDC token endpoint GitHub provides, and Rhumb Code Intel (`rhumb.sh`
+  by default). A Java root also reaches whatever repositories its own
+  Maven or Gradle build uses (typically Maven Central and the Gradle plugin
+  portal) and Maven Central for scip-java's compiler plugin.
 - **Memory.** The TypeScript and Python indexers are Node processes that
   type-check your project. Each run gets a heap ceiling of at least 6 GB,
   scaled up to 80% of the runner's memory on larger runners; a large monorepo
@@ -111,7 +119,9 @@ Intel (`base-url`, default `https://rhumb.sh`):
 | `POST /api/code-intel/v1/uploads/{id}/fail` (on failure only) | A failure reason of at most 500 characters: an HTTP status and response summary, or -- when an indexer or `npm` process failed -- only its exit code, signal, and whether it timed out. The command line and the process's output stay in your step summary and are not sent. |
 
 To download indexers it contacts `registry.npmjs.org` and `github.com`; those
-requests carry no data from your repository. Because `base-url` receives your
+requests carry no data from your repository. Indexing a Java root runs your
+own build, which contacts the repositories it is configured for, exactly as
+your normal CI does. Because `base-url` receives your
 OIDC token and your index, point it only at a service you trust.
 
 `dry-run: true` prints the request sequence without any network call, which
@@ -168,6 +178,10 @@ project marker:
   neither (e.g. only a `[workspace.metadata]` child table) is not a rust
   root -- declare it explicitly via `.rci-index.yml` if it should be indexed
   anyway.
+- **Java** — a directory with `pom.xml`, `build.gradle`,
+  `build.gradle.kts`, `settings.gradle`, or `settings.gradle.kts`. Unlike the
+  others, Java roots are never indexed from detection alone: see
+  [Java](#java).
 
 **Topmost marker wins.** Once a directory matches a language's marker, the
 walk does not look for that *same* language any further down that
@@ -199,6 +213,49 @@ walk's bounds — both take precedence over auto-detection, and either can
 be used to *reduce* a workspace to fewer roots than the walk would find, or
 to declare additional roots the walk's depth or exclusions miss.
 
+### Java
+
+Indexing Java runs your Maven or Gradle build (scip-java compiles the
+project with its compiler plugin), so it runs in your CI, on your runner and
+credentials, and it costs build minutes. It is therefore **opt-in**: a
+repository that does not declare Java roots spends no CI time on it. When the
+walk finds a Java build that is not declared, the step summary says so and
+indexes nothing:
+
+```
+SKIPPED  java @ .: Java indexing runs your Maven or Gradle build; declare its roots in .rci-index.yml to enable it.
+```
+
+Declare the roots in `.rci-index.yml` (or the `roots-override` input), naming
+the directory that holds the top-level build -- the root `pom.xml`, or the
+directory with `settings.gradle(.kts)`; one root covers all its modules. An
+explicit `java: []` silences the notice.
+
+```yaml
+roots:
+  java:
+    - .
+```
+
+The runner needs a JDK before this step; the action installs none, so the
+build uses the JDK your workflow sets up:
+
+```yaml
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: rhumb-org/code-intel-upload-action@v1
+```
+
+scip-java 0.13 needs JDK 17 or newer and, for Gradle builds, Gradle 8 or
+newer. A missing or older JDK fails the Java root with that reason. scip-java
+uses the repository's `mvnw` or `gradlew` when present, otherwise `mvn` or
+`gradle` from `PATH`. It writes its index to a scratch directory outside your
+checkout, and the build's own output (`target/`, `build/`) stays in the
+workspace as in any build.
+
 ### `.rci-index.yml`
 
 An optional file at the repo root, checked in by the tenant, declaring
@@ -211,6 +268,8 @@ roots:
   python:
     - services/worker
   rust:
+    - .
+  java:
     - .
 ```
 
@@ -268,17 +327,23 @@ there as `OK`, `FAILED`, or `SKIPPED` with its reason.
 | A TypeScript root fails with a missing project file | The root has no `tsconfig.json`; name the project file with the object form of `.rci-index.yml` (see above). |
 | `no indexable language detected` | No root marker was found within the search depth. Declare roots explicitly with `.rci-index.yml` or `roots-override`. |
 | `unsupported platform for rust-analyzer` | Rust indexing supports Linux and macOS on x64 and arm64 only. |
+| `SKIPPED  java @ ...: Java indexing runs your Maven or Gradle build; declare its roots ...` | Java is opt-in. Declare the root in `.rci-index.yml` (see [Java](#java)). |
+| `Java indexing needs a JDK 17+ on the runner ... none was found` or `... the runner's JDK is 11` | Add `actions/setup-java` with JDK 17 or newer before this step. |
+| A Java root fails with `child process failed (exit code ...)` | Your Maven or Gradle build failed under scip-java; run `scip-java index` locally in that directory to see the build output, which stays in the step summary and is not sent to Rhumb. Gradle must be 8 or newer. |
+| `the root has none of java's build files` | The declared Java root is not the directory holding `pom.xml` / `build.gradle(.kts)` / `settings.gradle(.kts)`. |
 
 ## Pinned indexers
 
 [`indexer-pins.json`](indexer-pins.json) pins the exact `scip-typescript` and
-`scip-python` npm versions (with their `sha512` integrity) and the
-`rust-analyzer` release (with a `sha256` per platform). They ship with each
+`scip-python` npm versions (with their `sha512` integrity), the
+`rust-analyzer` release (with a `sha256` per platform), and the `scip-java`
+release (one platform-independent asset with its `sha256`). They ship with each
 release of this action, so the indexers a workflow installs are decided by
 the action version it references -- never by the `base-url` host. Downloaded
 artifacts are hashed and compared before they are installed or executed, and
-the rust-analyzer download is restricted to the official
-`github.com/rust-lang/rust-analyzer` releases. To bump an indexer, update the
+the rust-analyzer and scip-java downloads are restricted to the official
+`github.com/rust-lang/rust-analyzer` and `github.com/scip-code/scip-java`
+releases. To bump an indexer, update the
 version together with a checksum recomputed from the published artifact.
 
 ## License

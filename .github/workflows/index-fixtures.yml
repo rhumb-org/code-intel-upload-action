@@ -1,0 +1,33 @@
+name: index-fixtures
+
+# Manual proof that the Java leg indexes real Maven and Gradle builds and
+# uploads the result. It runs scip-java, which downloads build dependencies,
+# so it has no push or pull_request trigger: dispatch it by hand when the Java
+# leg changes.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # the action authenticates its uploads with the workflow's OIDC token
+
+jobs:
+  java:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Only the Java fixtures: every other language is switched off, and the
+      # two fixture builds (each a multi-module build with a reference across
+      # modules) are the declared Java roots. Maven and Gradle come from the
+      # runner image.
+      - name: Index the Maven and Gradle fixtures
+        uses: ./
+        with:
+          fail-on-error: 'true'
+          roots-override: >-
+            {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"]}

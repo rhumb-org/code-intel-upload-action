@@ -7,7 +7,14 @@
  * (scip-typescript's `--pnpm-workspaces` mode indexes every declared member
  * from that one marker even with no root tsconfig, so the workspace root
  * itself -- not each member -- is the root); Python's is pyproject.toml,
- * setup.py, or setup.cfg; Rust's is a Cargo.toml.
+ * setup.py, or setup.cfg; Rust's is a Cargo.toml; Java's is a pom.xml,
+ * build.gradle, build.gradle.kts, settings.gradle, or settings.gradle.kts.
+ * The markers live in languages.mjs, one row per language.
+ *
+ * Java's roots are detected here only so the run can tell the user what it
+ * skipped: indexing it runs the repository's own build, so it is opt-in and
+ * `withholdBuildRoots` removes detected roots of such languages before they
+ * can be indexed.
  *
  * TOPMOST MARKER WINS: once a directory matches a language's root marker,
  * the walk stops looking for that SAME language any further down that
@@ -52,6 +59,7 @@
 
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { LANGUAGES, KNOWN_LANGUAGES, BUILD_RUNNING_LANGUAGES } from './languages.mjs';
 
 const EXCLUDED_DIRS = new Set([
   'node_modules',
@@ -67,19 +75,6 @@ const EXCLUDED_DIRS = new Set([
 
 const MAX_DEPTH = 4;
 
-const PNPM_WORKSPACE_MARKER = 'pnpm-workspace.yaml';
-
-/**
- * Each language's root marker as a list of AND-groups; a directory matches
- * the language when ANY group's files are ALL present there.
- */
-const MARKER_ALTERNATIVES = {
-  typescript: [['tsconfig.json'], [PNPM_WORKSPACE_MARKER]],
-  python: [['pyproject.toml'], ['setup.py'], ['setup.cfg']],
-  rust: [['Cargo.toml']],
-};
-
-const LANGUAGES = Object.keys(MARKER_ALTERNATIVES);
 
 /**
  * A `[project]` or `[build-system]` TOML table header (top-level or dotted,
@@ -146,7 +141,11 @@ async function dirHasAll(dir, files) {
   return true;
 }
 
-async function dirHasAnyAlternative(dir, alternatives) {
+/**
+ * Does `dir` carry one of a language's root markers: ANY group's files ALL
+ * present (see `markers` in languages.mjs).
+ */
+export async function dirHasAnyAlternative(dir, alternatives) {
   for (const files of alternatives) {
     if (await dirHasAll(dir, files)) return true;
   }
@@ -193,11 +192,11 @@ async function cargoTomlIsWorkspaceRoot(dir) {
  */
 async function walk(dir, depth, covered, visit) {
   const coveredForChildren = new Set(covered);
-  for (const lang of LANGUAGES) {
+  for (const lang of KNOWN_LANGUAGES) {
     const alreadyCovered = covered.has(lang);
     const matches = alreadyCovered
       ? lang === 'rust' && (await cargoTomlIsWorkspaceRoot(dir))
-      : await dirHasAnyAlternative(dir, MARKER_ALTERNATIVES[lang]);
+      : await dirHasAnyAlternative(dir, LANGUAGES[lang].markers);
     if (!matches) continue;
     await visit(dir, lang);
     coveredForChildren.add(lang);
@@ -218,14 +217,14 @@ async function walk(dir, depth, covered, visit) {
 }
 
 /**
- * Auto-detects languages present under `repoRoot`. Returns
- * `{typescript: string[], python: string[], rust: string[]}`, each entry a
+ * Auto-detects languages present under `repoRoot`. Returns one string[] per
+ * language in languages.mjs (`{typescript, python, rust, java}`), each entry a
  * POSIX-separated path relative to `repoRoot` ("." for the repo root
  * itself). See the module doc for the topmost-marker-wins rule that keeps
  * a nested member of an already-detected root from becoming a second one.
  */
 export async function detectRoots(repoRoot) {
-  const found = { typescript: [], python: [], rust: [] };
+  const found = Object.fromEntries(KNOWN_LANGUAGES.map((lang) => [lang, []]));
 
   await walk(repoRoot, 0, new Set(), async (dir, lang) => {
     const rel = path.relative(repoRoot, dir) || '.';
@@ -234,6 +233,24 @@ export async function detectRoots(repoRoot) {
   });
 
   return found;
+}
+
+/**
+ * Splits detected roots into those the run may index and those it withholds:
+ * a language whose indexing runs the repository's build (`runsBuild`) is
+ * opt-in, so its detected roots are never indexed -- only listed, for the
+ * step summary's SKIPPED notice. Returns `{ roots, withheld }`, where
+ * `withheld` maps a language to its detected roots (only non-empty ones).
+ */
+export function withholdBuildRoots(detected) {
+  const roots = { ...detected };
+  const withheld = {};
+  for (const lang of BUILD_RUNNING_LANGUAGES) {
+    if ((detected[lang] ?? []).length === 0) continue;
+    withheld[lang] = detected[lang];
+    roots[lang] = [];
+  }
+  return { roots, withheld };
 }
 
 /**
