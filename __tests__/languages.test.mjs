@@ -255,7 +255,7 @@ test('dry-run: csharp roots declared in .rci-index.yml are listed with their req
   });
   assert.match(stdout, /## csharp @ \./);
   assert.match(stdout, /"lang":"csharp","roots":\["\."\]/);
-  assert.match(stdout, /<gzip'd index\.scip>/);
+  assert.match(stdout, /<gzip'd index\.scip: one repo-relative index for all csharp roots>/);
   assert.doesNotMatch(stdout, /SKIPPED/);
 });
 
