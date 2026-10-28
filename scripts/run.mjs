@@ -125,7 +125,8 @@ async function loadActionVersion() {
 
 export async function installIndexerFor(lang, pins, binDir) {
   const def = languageDef(lang);
-  return { [def.binKey]: await def.install(pins, binDir) };
+  const companions = def.installCompanions === undefined ? {} : await def.installCompanions(pins, binDir);
+  return { ...companions, [def.binKey]: await def.install(pins, binDir) };
 }
 
 function messageOf(err) {

@@ -91,12 +91,15 @@ function keepMessageTail(err) {
  * roots are the user's word, but an indexer run over a directory with no
  * build would only fail with the build tool's own message.
  *
- * A row's `prepare` steps (C#'s `dotnet restore`) run first, each under the
- * same timeout as the indexer; the first failure fails the root.
+ * A row's `prepare` steps (C#'s `dotnet restore`, CMake's configure and build)
+ * run first, in order, each under the same timeout as the indexer; the first
+ * failure fails the root. A step names its command either as `file` (on the
+ * runner's PATH) or as `binKey` (a tool this action installed).
  */
 export async function runIndexer(lang, absoluteRootDir, bins, { project, outputDir, execFileImpl = execFile } = {}) {
   const def = languageDef(lang);
   if (def.runsBuild && !(await dirHasAnyAlternative(absoluteRootDir, def.markers))) {
+    if (def.missingBuildNotice !== undefined) throw new Error(def.missingBuildNotice);
     const wanted = def.markers.map((group) => group.join(' + ')).join(', ');
     throw new Error(`the root has none of ${lang}'s build files (${wanted}); declare the directory that holds the build`);
   }
@@ -104,11 +107,15 @@ export async function runIndexer(lang, absoluteRootDir, bins, { project, outputD
   const output = path.join(outputDir ?? absoluteRootDir, SCIP_OUTPUT_NAME);
   const { args, cwd, env, maxBuffer } = def.command({ absoluteRoot: absoluteRootDir, output, project });
 
-  for (const step of def.prepare?.({ absoluteRoot: absoluteRootDir }) ?? []) {
-    const stepOptions = { timeout: INDEXER_TIMEOUT_MS };
-    if (step.cwd !== undefined) stepOptions.cwd = step.cwd;
+  for (const step of def.prepare?.({ absoluteRoot: absoluteRootDir, output }) ?? []) {
+    const stepOptions = { timeout: INDEXER_TIMEOUT_MS, cwd: step.cwd ?? absoluteRootDir };
     if (step.env !== undefined) stepOptions.env = { ...process.env, ...step.env };
-    await execFileImpl(step.file, step.args, stepOptions);
+    if (step.maxBuffer !== undefined) stepOptions.maxBuffer = step.maxBuffer;
+    try {
+      await execFileImpl(step.file ?? bins[step.binKey], step.args, stepOptions);
+    } catch (err) {
+      throw keepMessageTail(err);
+    }
   }
 
   const options = { timeout: INDEXER_TIMEOUT_MS };

@@ -12,7 +12,7 @@
  *   markers                             root markers as OR-ed groups of AND-ed files;
  *                                       `*.ext` matches any file with that extension
  *   runsBuild                           indexing runs the repository's own build
- *                                       (Maven, Gradle, MSBuild). Such a language is
+ *                                       (Maven, Gradle, MSBuild, CMake). Such a language is
  *                                       opt-in: its roots come only from
  *                                       `.rci-index.yml` or `roots-override`,
  *                                       never from auto-detection (see
@@ -24,22 +24,34 @@
  *   acceptsProject                      a root entry may name a `project` file
  *   nodeIndexer                         the indexer is a Node process that needs a
  *                                       sized heap (see index-lang.mjs)
- *   prepare({absoluteRoot})             (optional) steps that run before the indexer, in
- *                                       order, each { file, args, cwd?, env? }
+ *   prepare({absoluteRoot, output})     (optional) the steps that run before the
+ *                                       indexer, in order, each { file | binKey,
+ *                                       args, cwd?, env?, maxBuffer? }: `file` is a
+ *                                       command on the runner's PATH, `binKey` a tool
+ *                                       installed by installCompanions. Scratch
+ *                                       files belong beside `output`
+ *   installCompanions(pins, binDir)     (optional) installs the other tools the
+ *                                       prepare steps run; returns { binKey: path }
+ *   missingBuildNotice                  (optional) the error for a declared root
+ *                                       that carries none of `markers`
  *   command({absoluteRoot, output, project})
  *                                       -> { args, cwd?, env?, maxBuffer? } for the indexer binary
  */
 
 import { existsSync, readdirSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   installNpmIndexer,
   installRustAnalyzer,
   installScipJava,
   installScipDotnet,
+  installScipClang,
+  installCmake,
   assertJdk,
   assertDotnetSdk,
   detectRustAnalyzerPlatformKey,
+  detectScipClangPlatformKey,
   DOTNET_CLI_ENV,
 } from './install.mjs';
 
@@ -65,6 +77,11 @@ function csharpProjectFiles(absoluteRoot) {
   const solutions = names.filter((name) => /\.slnx?$/i.test(name));
   const files = solutions.length > 0 ? solutions : names.filter((name) => /\.csproj$/i.test(name));
   return files.map((name) => path.join(absoluteRoot, name));
+}
+
+/** The CMake build tree: beside the index, outside the checkout. */
+function cmakeBuildDir(output) {
+  return path.join(path.dirname(output), 'cmake-build');
 }
 
 export const LANGUAGES = {
@@ -163,6 +180,41 @@ export const LANGUAGES = {
       // The package's newest build targets the SDK the runner has; Major lets it
       // also run on a newer runtime than any build it ships (see the pin's note).
       env: { ...DOTNET_CLI_ENV, DOTNET_ROLL_FORWARD: 'Major' },
+    }),
+  },
+  cpp: {
+    indexerName: 'scip-clang',
+    indexerVersion: (pins) => pins['scip-clang']?.version ?? '',
+    binKey: 'scipClang',
+    install: async (pins, binDir) => installScipClang(pins['scip-clang'], binDir, detectScipClangPlatformKey()),
+    // The platform is checked first, before either download.
+    installCompanions: async (pins, binDir) => ({ cmake: await installCmake(pins.cmake, binDir, detectScipClangPlatformKey()) }),
+    markers: [['CMakeLists.txt']],
+    runsBuild: true,
+    optInNotice: 'C/C++ indexing runs your CMake configure and build; declare its roots in .rci-index.yml to enable it.',
+    missingBuildNotice: 'C/C++ indexing needs a CMake project: the root has no CMakeLists.txt; declare the directory that holds it',
+    acceptsProject: false,
+    nodeIndexer: false,
+    // Configure with the compilation database on, then build so generated
+    // headers exist: scip-clang reads the compile commands and does not build.
+    // An explicit job count: a bare `-j` is unbounded under `make`.
+    prepare: ({ absoluteRoot, output, jobs = os.availableParallelism() }) => {
+      const buildDir = cmakeBuildDir(output);
+      return [
+        {
+          binKey: 'cmake',
+          args: ['-S', absoluteRoot, '-B', buildDir, '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5'],
+          maxBuffer: BUILD_OUTPUT_MAX_BYTES,
+        },
+        { binKey: 'cmake', args: ['--build', buildDir, '-j', String(jobs)], maxBuffer: BUILD_OUTPUT_MAX_BYTES },
+      ];
+    },
+    // scip-clang resolves source paths against its working directory, so it runs
+    // from the root; its per-file progress lines are noise in the step summary.
+    command: ({ absoluteRoot, output }) => ({
+      args: ['--compdb-path', path.join(cmakeBuildDir(output), 'compile_commands.json'), '--index-output-path', output, '--no-progress-report'],
+      cwd: absoluteRoot,
+      maxBuffer: BUILD_OUTPUT_MAX_BYTES,
     }),
   },
 };

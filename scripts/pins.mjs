@@ -4,7 +4,8 @@
  * integrity for the two Node indexers, release tag + per-platform URL +
  * sha256 for rust-analyzer, version + URL + sha256 of the one
  * platform-independent scip-java asset, version + nuget.org URL + sha256 of
- * the scip-dotnet package. The pins travel with the action's own tag, so
+ * the scip-dotnet package, per-platform URL + sha256 for scip-clang and for
+ * the CMake wheel its build runs. The pins travel with the action's own tag, so
  * what a workflow installs is decided by the action version it references --
  * never by the `base-url` host, which only ever receives uploads.
  */
@@ -47,6 +48,17 @@ function validatePins(pins) {
   requireString(dotnet?.version, 'scip-dotnet.version');
   requireString(dotnet?.url, 'scip-dotnet.url');
   requireString(dotnet?.sha256, 'scip-dotnet.sha256');
+  for (const name of ['scip-clang', 'cmake']) {
+    const pin = pins?.[name];
+    requireString(pin?.version, `${name}.version`);
+    if (pin.platforms === null || typeof pin.platforms !== 'object') {
+      throw new Error(`indexer-pins.json: ${name}.platforms must be an object`);
+    }
+    for (const [platform, entry] of Object.entries(pin.platforms)) {
+      requireString(entry?.url, `${name}.platforms.${platform}.url`);
+      requireString(entry?.sha256, `${name}.platforms.${platform}.sha256`);
+    }
+  }
   return pins;
 }
 
