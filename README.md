@@ -13,13 +13,23 @@ On each run the action:
 1. detects the languages and project roots in the checked-out tree
    (TypeScript, Python, Rust -- see [Root detection](#root-detection); Java
    and C# only where you declare them -- see [Java](#java) and [C#](#c));
-2. creates an upload with Rhumb Code Intel, authenticating with your
-   workflow's GitHub OIDC token (no long-lived secret);
+2. creates one upload per language with Rhumb Code Intel, naming all of that
+   language's roots and authenticating with your workflow's GitHub OIDC token
+   (no long-lived secret);
 3. installs the SCIP indexer for each language at the exact version pinned in
    [`indexer-pins.json`](indexer-pins.json), verifying the downloaded artifact
    against the pinned checksum before it is installed or run;
-4. builds one SCIP index per `(language, root)` pair;
-5. uploads each index and records the result.
+4. builds a SCIP index for each root of the language, in a scratch directory
+   outside your checkout, and merges them into one index whose file paths are
+   relative to the repository root;
+5. uploads that one index and records the result.
+
+Rhumb keeps one index per language per commit, so a language with several
+roots is published as one merged index, never one per root. A language is
+uploaded only if every one of its roots indexed: when any root fails, nothing
+of that language is uploaded and the failure names each failed root (see
+[Fail-soft](#fail-soft-and-how-a-failure-is-recorded)). A repository with a
+single root at its top level uploads its indexer's output unchanged.
 
 It is fail-soft by default: an indexing or upload failure is recorded and
 shown in the step summary but does not fail your workflow, unless you opt in
@@ -90,7 +100,8 @@ and install any dependencies your language's indexer needs to resolve types
   scaled up to 80% of the runner's memory on larger runners; a large monorepo
   may need a larger runner.
 - **Time.** Every network call and every indexer process has a timeout
-  (indexing one root: 60 minutes). Set `timeout-minutes` on the job as well.
+  (indexing one root: 60 minutes; roots are indexed one after another). Set
+  `timeout-minutes` on the job as well.
 
 ## Onboarding
 
@@ -118,8 +129,8 @@ Intel (`base-url`, default `https://rhumb.sh`):
 | Request | What it carries |
 |---|---|
 | OIDC token request (to GitHub) | Audience `<base-url>/api/code-intel/v1/uploads`. The resulting token is sent to Rhumb as a bearer credential on every door call; it identifies the repository, commit, ref, and workflow that produced it. |
-| `POST /api/code-intel/v1/uploads` | The language and root directory (relative path) being indexed. |
-| `PUT` to a presigned storage URL returned by Rhumb | The gzip-compressed SCIP index of that root. A SCIP index describes your code's symbols: file paths, symbol names and signatures, definition and reference locations, and documentation comments. It is not a copy of your source files. |
+| `POST /api/code-intel/v1/uploads` | The language and all of its root directories (relative paths) being indexed; one request per language. |
+| `PUT` to a presigned storage URL returned by Rhumb | The gzip-compressed SCIP index of that language: the indexes of all its roots merged into one. A SCIP index describes your code's symbols: file paths, symbol names and signatures, definition and reference locations, and documentation comments. It is not a copy of your source files. |
 | `POST /api/code-intel/v1/uploads/{id}/complete` | The SHA-256 and size of the uncompressed index, the indexer name and version, the action version, and a `deps_installed` flag. |
 | `POST /api/code-intel/v1/uploads/{id}/fail` (on failure only) | A failure reason of at most 500 characters: an HTTP status and response summary, or -- when an indexer or `npm` process failed -- only its exit code, signal, and whether it timed out. The command line and the process's output stay in your step summary and are not sent. |
 
@@ -135,12 +146,19 @@ is a safe way to see what a real run would do.
 
 ## Fail-soft, and how a failure is recorded
 
-Before installing or indexing a `(language, root)` pair, the action creates
-the upload with Rhumb (`POST /uploads`). Any later failure in that pair --
-install, the indexer process dying (for example an out-of-memory kill), or the
+Before installing or indexing a language, the action creates its upload with
+Rhumb (`POST /uploads`). Any later failure for that language -- install, an
+indexer process dying (for example an out-of-memory kill), the merge, or the
 upload itself -- is then reported against that upload (`POST
 /uploads/{id}/fail`, recorded as `failed_in_ci`) and listed in the step
-summary. A run can still end green with a failed pair; if you want a red
+summary. A language is all or nothing: if one root fails to index, the other
+roots are still indexed so every failure is reported, but nothing of the
+language is uploaded, because a partial index would present itself as the
+whole language. The failure names each failed root (the reason sent to Rhumb
+is `<root>: <exit code, signal or timeout>` per root) and the step summary
+lists the roots that indexed but were not uploaded. Each root's `OK` or
+`FAILED` line, with its duration, is also printed to the job log as it
+happens. A run can still end green with a failed language; if you want a red
 mark, set `fail-on-error` (below). The one case with no record on Rhumb's side
 is when the upload could not be created at all (door unreachable,
 unregistered repository, rejected token): the step summary then shows the
@@ -152,16 +170,18 @@ HTTP status and response body and says it was not recorded.
 |---|---|---|
 | `base-url` | `https://rhumb.sh` | Base URL of the Rhumb Code Intel service. It receives your OIDC token and the index uploads. |
 | `roots-override` | `''` | JSON object overriding detected/declared roots, e.g. `{"typescript":["packages/api"],"python":["services/worker"]}`. See "Root detection" below. |
-| `fail-on-error` | `false` | When `true`, the step exits non-zero once every language/root has been attempted and recorded, if any of them failed to index or upload (or roots could not be resolved or the pinned indexers could not be loaded). Opt in only from a workflow that is not a required check: the upload failure then shows as a red check on the commit or PR without blocking merges. |
+| `fail-on-error` | `false` | When `true`, the step exits non-zero once every language has been attempted and recorded, if any of them failed to index or upload (or roots could not be resolved or the pinned indexers could not be loaded). Opt in only from a workflow that is not a required check: the upload failure then shows as a red check on the commit or PR without blocking merges. |
 | `dry-run` | `false` | Resolve languages/roots and print the request sequence a real run would make. No network calls, no installs, no indexing. |
 
 ## Outputs
 
 | Output | Description |
 |---|---|
-| `upload-ids` | JSON object mapping `"<language> @ <root>"` -> upload id (or `null` only when the door was unreachable at that pair's own upload-creation call). |
-| `bytes` | JSON object mapping `"<language> @ <root>"` -> `{raw_bytes, compressed_bytes}`. |
-| `durations-ms` | JSON object mapping `"<language> @ <root>"` -> total pipeline duration in milliseconds. |
+| `upload-ids` | JSON object mapping `"<language>"` -> upload id (or `null` only when the door was unreachable at that language's upload-creation call). |
+| `bytes` | JSON object mapping `"<language>"` -> `{raw_bytes, compressed_bytes}` of the merged index. |
+| `durations-ms` | JSON object mapping `"<language>"` -> duration in milliseconds of that language's whole pipeline: indexing every root, merging, and uploading. |
+
+Earlier versions keyed these by `"<language> @ <root>"`, one entry per root.
 
 ## Root detection
 
@@ -372,7 +392,7 @@ checked-in file for any language key it names.
 
 ## Troubleshooting
 
-Start with the job's step summary: every `(language, root)` pair is listed
+Start with the job's step summary: every root and every language is listed
 there as `OK`, `FAILED`, or `SKIPPED` with its reason.
 
 | Symptom | Likely cause and fix |
@@ -382,6 +402,7 @@ there as `OK`, `FAILED`, or `SKIPPED` with its reason.
 | `create upload failed: HTTP 401 ...` | The token was rejected (wrong audience, expired, or an unexpected `base-url`). Leave `base-url` at its default unless Rhumb directs otherwise. |
 | `create upload failed: ... fetch failed` or a timeout | Rhumb Code Intel was unreachable from the runner. The run is not recorded on Rhumb's side. |
 | `downloaded tarball integrity ... does not match pinned` / `downloaded asset sha256 ... does not match pinned` | The downloaded indexer is not the pinned artifact and was not installed. Re-run; if it persists, open an issue. |
+| `nothing uploaded, a language is uploaded only when all its roots index` | At least one root of that language failed; its own `FAILED` line says why. Fix or remove that root, and the language uploads as a whole. |
 | `child process failed (exit code 134)` in the step summary | The indexer ran out of memory. Use a larger runner, or narrow the roots with `.rci-index.yml` / `roots-override`. |
 | `child process failed (... killed (timed out))` | An indexer or `npm install` exceeded its timeout. |
 | A TypeScript root fails with a missing project file | The root has no `tsconfig.json`; name the project file with the object form of `.rci-index.yml` (see above). |
