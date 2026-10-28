@@ -3,10 +3,21 @@
  * run.mjs -- the composite action's single entry point (action.yml runs
  * `node "${{ github.action_path }}/scripts/run.mjs"`). Orchestrates, in
  * order: resolve languages+roots, load the pinned indexers, then for each
- * (language, root) pair create an upload, install+verify the indexer, index,
- * and upload the result through the CI upload door.
+ * language create one upload, install+verify the indexer, index every root of
+ * the language, merge them into one repo-relative index, and upload that
+ * through the CI upload door.
  *
- * Fail-soft throughout: a failure at any stage for one (language, root)
+ * ONE INDEX PER LANGUAGE. Rhumb stores one index per (repository, commit,
+ * language), and every indexer writes paths relative to the root it ran in.
+ * The roots of a language are therefore merged (scip-merge.mjs) before the
+ * single upload, which is what Rhumb's own indexer publishes.
+ *
+ * ALL OR NOTHING PER LANGUAGE. When any root of a language fails to index,
+ * nothing of that language is uploaded: a partial index would publish a
+ * coverage hole as if it were the whole language. The upload is failed naming
+ * each failed root; roots that did index are listed as indexed-not-uploaded.
+ *
+ * Fail-soft throughout: a failure at any stage for one language's
  * pipeline is caught, reported to `/fail` when an upload id already exists,
  * and recorded in the step summary -- `main` never throws and, by default,
  * this process never exits non-zero, so a broken or rejected upload never
@@ -19,7 +30,7 @@
  * keeps this action out of its required checks gets a red mark on the
  * commit or PR without ever being blocked by it. Never the default.
  *
- * UPLOAD CREATED BEFORE INDEXING. `processRoot` creates the upload FIRST
+ * UPLOAD CREATED BEFORE INDEXING. `processLanguage` creates the upload FIRST
  * (`door.createUpload`), before install or indexing run, so every later
  * failure -- install, the indexer child dying (e.g. an out-of-memory kill on
  * a large TypeScript root), or the upload itself -- has an id to `/fail`
@@ -44,6 +55,7 @@ import { loadRciIndexConfig, normalizeRootEntry } from './rci-index-config.mjs';
 import { loadIndexerPins } from './pins.mjs';
 import { LANGUAGES, KNOWN_LANGUAGES, languageDef } from './languages.mjs';
 import { runIndexer } from './index-lang.mjs';
+import { mergeScipIndexes } from './scip-merge.mjs';
 import { UploadDoorClient, describeFailureForDoor } from './door-client.mjs';
 import { uploadIndex } from './upload.mjs';
 import { writeGithubOutput, appendStepSummary } from './gh-output.mjs';
@@ -56,6 +68,9 @@ const EMPTY_OUTPUTS = { 'upload-ids': '{}', bytes: '{}', 'durations-ms': '{}' };
 
 /** Longest response body echoed into the step summary. */
 const MAX_BODY_ECHO_CHARS = 500;
+
+/** The door keeps this much of a failure reason (the door client cuts at the same length). */
+const MAX_DOOR_REASON_CHARS = 500;
 
 function env(name, fallback = '') {
   const value = process.env[name];
@@ -138,30 +153,45 @@ function echoBody(body) {
   return text.length > MAX_BODY_ECHO_CHARS ? `${text.slice(0, MAX_BODY_ECHO_CHARS)}...` : text;
 }
 
+function formatSeconds(ms) {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 /**
- * Runs one (lang, root) pipeline: create the upload, then install+index,
- * then upload (see the module doc's "UPLOAD CREATED BEFORE INDEXING").
- * `ensureInstalled` is a caller-supplied closure so the per-language install
- * cache (`installedBins`) stays owned by `main`, not duplicated here. Never
- * throws -- always returns `{ label, result }`.
+ * Runs one language's pipeline: create the upload, then install, index every
+ * root into its own scratch directory, merge, and upload once (see the module
+ * doc's "UPLOAD CREATED BEFORE INDEXING" and "ALL OR NOTHING PER LANGUAGE").
+ *
+ * `roots` is `[{root, project}]` in declared order; `root` is relative to
+ * `repoRoot`. `ensureInstalled` is a caller-supplied closure so the
+ * per-language install cache (`installedBins`) stays owned by `main`, not
+ * duplicated here. Per-root outcome lines go to `log` as they happen and come
+ * back as `rootLines` for the step summary. Scratch space lives under
+ * `RUNNER_TEMP` and is removed afterwards; nothing is written into the
+ * checkout. Never throws -- always returns `{ label, result, rootLines }`.
  */
-export async function processRoot({
+export async function processLanguage({
   door,
   lang,
-  root,
-  absoluteRoot,
-  project,
+  roots,
+  repoRoot,
   ensureInstalled,
   meta,
   runIndexerImpl = runIndexer,
   uploadIndexImpl = uploadIndex,
+  mergeImpl = mergeScipIndexes,
+  log = console.log,
 }) {
-  const label = `${lang} @ ${root}`;
-  const unrecorded = (reason) => ({ label, result: { lang, status: 'failed', uploadId: null, reason, recorded: false } });
+  const label = lang;
+  const rootLines = [];
+  const unrecorded = (reason) => ({ label, result: { lang, status: 'failed', uploadId: null, reason, recorded: false }, rootLines });
 
   let created;
   try {
-    created = await door.createUpload(lang, [root]);
+    created = await door.createUpload(
+      lang,
+      roots.map(({ root }) => root),
+    );
   } catch (err) {
     return unrecorded(`create upload failed: ${messageOf(err)}`);
   }
@@ -174,22 +204,62 @@ export async function processRoot({
   }
   const upload = { uploadId: created.body.upload_id, putUrl: created.body.put_url, maxBytes: created.body.max_bytes };
 
-  // A language that runs the repository's build writes its index outside the
-  // checkout, so the build never sees it.
+  const startedAt = Date.now();
+  const record = (line) => {
+    rootLines.push(line);
+    log(line);
+  };
+
+  // Every index is written outside the checkout: a build must not see (or
+  // clean away) it, and the checkout stays as the workflow left it.
   let scratchDir;
   try {
     const bins = await ensureInstalled();
-    const indexerOptions = { project };
-    if (LANGUAGES[lang]?.runsBuild) {
-      scratchDir = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'rci-index-'));
-      indexerOptions.outputDir = scratchDir;
+    scratchDir = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'rci-index-'));
+
+    const indexed = [];
+    const failed = [];
+    for (const [position, { root, project }] of roots.entries()) {
+      const rootStartedAt = Date.now();
+      const outputDir = path.join(scratchDir, `root-${position}`);
+      try {
+        await mkdir(outputDir);
+        const scipPath = await runIndexerImpl(lang, path.resolve(repoRoot, root), bins, { project, outputDir });
+        indexed.push({ root, scipPath });
+        record(`OK      ${lang} @ ${root}: indexed in ${formatSeconds(Date.now() - rootStartedAt)}`);
+      } catch (err) {
+        failed.push({ root, err });
+        record(`FAILED  ${lang} @ ${root}: ${messageOf(err)} (after ${formatSeconds(Date.now() - rootStartedAt)})`);
+      }
     }
-    const scipPath = await runIndexerImpl(lang, absoluteRoot, bins, indexerOptions);
-    const result = await uploadIndexImpl(door, lang, scipPath, meta, upload);
-    return { label, result };
+
+    if (failed.length > 0) {
+      const forDoor = failed.map(({ root, err }) => `${root}: ${describeFailureForDoor(err)}`).join('; ');
+      await door.failUpload(upload.uploadId, forDoor.slice(0, MAX_DOOR_REASON_CHARS));
+      const notUploaded = indexed.length > 0 ? `; indexed but not uploaded: ${indexed.map(({ root }) => root).join(', ')}` : '';
+      const reason = `nothing uploaded, a language is uploaded only when all its roots index; failed: ${failed.map(({ root }) => root).join(', ')}${notUploaded}`;
+      return {
+        label,
+        result: { lang, status: 'failed', uploadId: upload.uploadId, reason, recorded: true, durationMs: Date.now() - startedAt },
+        rootLines,
+      };
+    }
+
+    const merged = await mergeImpl({
+      inputs: indexed,
+      outputPath: path.join(scratchDir, 'merged.scip'),
+      projectRootUri: pathToFileURL(repoRoot).href,
+    });
+    const result = await uploadIndexImpl(door, lang, merged.path, meta, upload);
+    if (result.durationMs !== undefined) result.durationMs = Date.now() - startedAt;
+    return { label, result, rootLines };
   } catch (err) {
     await door.failUpload(upload.uploadId, describeFailureForDoor(err));
-    return { label, result: { lang, status: 'failed', uploadId: upload.uploadId, reason: messageOf(err), recorded: true } };
+    return {
+      label,
+      result: { lang, status: 'failed', uploadId: upload.uploadId, reason: messageOf(err), recorded: true, durationMs: Date.now() - startedAt },
+      rootLines,
+    };
   } finally {
     if (scratchDir !== undefined) await rm(scratchDir, { recursive: true, force: true });
   }
@@ -204,16 +274,13 @@ async function runDryRun(baseUrl, roots, withheld) {
   }
 
   for (const { lang, roots: langRoots } of languages) {
-    for (const entry of langRoots) {
-      const { root, project } = normalizeRootEntry(entry, lang, 'roots');
-      lines.push(`## ${lang} @ ${root}${project === undefined ? '' : ` (project ${project})`}`, '```');
-      lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads               {"lang":"${lang}","roots":["${root}"]}`);
-      // A build-running language's index is written outside the checkout.
-      const indexPath = LANGUAGES[lang].runsBuild ? 'index.scip' : `${root}/index.scip`;
-      lines.push(`PUT  <presigned put_url from create>                    <gzip'd ${indexPath}>`);
-      lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads/{id}/complete {"sha256":"...","raw_bytes":...}`);
-      lines.push('```', '');
-    }
+    const entries = langRoots.map((entry) => normalizeRootEntry(entry, lang, 'roots'));
+    const names = entries.map(({ root, project }) => `${root}${project === undefined ? '' : ` (project ${project})`}`);
+    lines.push(`## ${lang} @ ${names.join(', ')}`, '```');
+    lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads               {"lang":"${lang}","roots":${JSON.stringify(entries.map(({ root }) => root))}}`);
+    lines.push(`PUT  <presigned put_url from create>                    <gzip'd index.scip: one repo-relative index for all ${lang} roots>`);
+    lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads/{id}/complete {"sha256":"...","raw_bytes":...}`);
+    lines.push('```', '');
   }
 
   const skipped = skippedLines(withheld);
@@ -281,39 +348,35 @@ async function main() {
   const actionVersion = await loadActionVersion();
 
   for (const { lang, roots: langRoots } of languages) {
-    for (const entry of langRoots) {
-      const { root, project } = normalizeRootEntry(entry, lang, 'roots');
-      const absoluteRoot = path.resolve(repoRoot, root);
-      const door = new UploadDoorClient({ baseUrl, audience });
+    const door = new UploadDoorClient({ baseUrl, audience });
 
-      const { label, result } = await processRoot({
-        door,
-        lang,
-        root,
-        absoluteRoot,
-        project,
-        ensureInstalled: async () => {
-          if (installedBins[lang] === undefined) {
-            installedBins[lang] = await installIndexerFor(lang, pins, binDir);
-          }
-          return installedBins[lang];
-        },
-        meta: { indexerName: LANGUAGES[lang].indexerName, indexerVersion: LANGUAGES[lang].indexerVersion(pins), actionVersion },
-      });
+    const { label, result, rootLines } = await processLanguage({
+      door,
+      lang,
+      roots: langRoots.map((entry) => normalizeRootEntry(entry, lang, 'roots')),
+      repoRoot,
+      ensureInstalled: async () => {
+        if (installedBins[lang] === undefined) {
+          installedBins[lang] = await installIndexerFor(lang, pins, binDir);
+        }
+        return installedBins[lang];
+      },
+      meta: { indexerName: LANGUAGES[lang].indexerName, indexerVersion: LANGUAGES[lang].indexerVersion(pins), actionVersion },
+    });
 
-      uploadIds[label] = result.uploadId ?? null;
-      if (result.rawBytes !== undefined) {
-        bytes[label] = { raw_bytes: result.rawBytes, compressed_bytes: result.compressedBytes };
-      }
-      if (result.durationMs !== undefined) durationsMs[label] = result.durationMs;
+    uploadIds[label] = result.uploadId ?? null;
+    if (result.rawBytes !== undefined) {
+      bytes[label] = { raw_bytes: result.rawBytes, compressed_bytes: result.compressedBytes };
+    }
+    if (result.durationMs !== undefined) durationsMs[label] = result.durationMs;
 
-      if (result.status === 'failed' || result.status === 'skipped') {
-        const unrecordedNote = result.recorded === false ? ' (not recorded in the upload door: no upload id was minted)' : '';
-        summaryLines.push(`${result.status.toUpperCase()}  ${label}: ${result.reason ?? ''}${unrecordedNote}`);
-        markFailed();
-      } else {
-        summaryLines.push(`OK      ${label} -> ${result.status} (upload ${result.uploadId})`);
-      }
+    summaryLines.push(...rootLines);
+    if (result.status === 'failed' || result.status === 'skipped') {
+      const unrecordedNote = result.recorded === false ? ' (not recorded in the upload door: no upload id was minted)' : '';
+      summaryLines.push(`${result.status.toUpperCase()}  ${label}: ${result.reason ?? ''}${unrecordedNote}`);
+      markFailed();
+    } else {
+      summaryLines.push(`OK      ${label} -> ${result.status} (upload ${result.uploadId})`);
     }
   }
 
