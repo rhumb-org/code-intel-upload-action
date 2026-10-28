@@ -207,7 +207,9 @@ async function runDryRun(baseUrl, roots, withheld) {
       const { root, project } = normalizeRootEntry(entry, lang, 'roots');
       lines.push(`## ${lang} @ ${root}${project === undefined ? '' : ` (project ${project})`}`, '```');
       lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads               {"lang":"${lang}","roots":["${root}"]}`);
-      lines.push(`PUT  <presigned put_url from create>                    <gzip'd ${root}/index.scip>`);
+      // A build-running language's index is written outside the checkout.
+      const indexPath = LANGUAGES[lang].runsBuild ? 'index.scip' : `${root}/index.scip`;
+      lines.push(`PUT  <presigned put_url from create>                    <gzip'd ${indexPath}>`);
       lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads/{id}/complete {"sha256":"...","raw_bytes":...}`);
       lines.push('```', '');
     }
