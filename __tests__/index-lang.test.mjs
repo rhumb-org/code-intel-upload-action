@@ -100,8 +100,37 @@ test('runIndexer runs scip-java in the build root, writing into the given output
   });
   assert.equal(output, `/scratch/pair/${SCIP_OUTPUT_NAME}`);
   assert.deepEqual(calls, [
-    { bin: '/bin/scip-java', args: ['index', '--output', `/scratch/pair/${SCIP_OUTPUT_NAME}`], opts: { cwd: root, timeout: INDEXER_TIMEOUT_MS } },
+    { bin: '/bin/scip-java', args: ['index', '--output', `/scratch/pair/${SCIP_OUTPUT_NAME}`], opts: { cwd: root, timeout: INDEXER_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 } },
   ]);
+});
+
+test('runIndexer keeps only the tail of a failed Java build, with the command line and exit code intact', async () => {
+  const output = `${'compiling\n'.repeat(5000)}BUILD FAILED: the last line`;
+  const failure = Object.assign(new Error(`Command failed: /bin/scip-java index\n${output}`), { code: 1 });
+  await assert.rejects(
+    () =>
+      runIndexer('java', `${FIXTURES}java-maven-repo`, { scipJava: '/bin/scip-java' }, {
+        execFileImpl: async () => {
+          throw failure;
+        },
+      }),
+    (err) => {
+      assert.equal(err, failure);
+      assert.equal(err.code, 1);
+      assert.match(err.message, /^Command failed: \/bin\/scip-java index\n\.\.\.\n/);
+      assert.match(err.message, /BUILD FAILED: the last line$/);
+      assert.ok(err.message.length < 4100, `message is ${err.message.length} chars`);
+      return true;
+    },
+  );
+});
+
+test('runIndexer leaves a typescript failure message as the child produced it', async () => {
+  const failure = new Error(`Command failed: scip-typescript\n${'x'.repeat(10000)}`);
+  await assert.rejects(
+    () => runIndexer('typescript', '/repo/root', { scipTypescript: 'scip-typescript' }, { execFileImpl: async () => { throw failure; } }),
+    (err) => err === failure && err.message.length > 10000,
+  );
 });
 
 test('runIndexer on a java root without a build file fails with that reason and starts nothing', async () => {

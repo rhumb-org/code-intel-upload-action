@@ -24,7 +24,7 @@
  *   nodeIndexer                         the indexer is a Node process that needs a
  *                                       sized heap (see index-lang.mjs)
  *   command({absoluteRoot, output, project})
- *                                       -> { args, cwd? } for the indexer binary
+ *                                       -> { args, cwd?, maxBuffer? } for the indexer binary
  */
 
 import { existsSync } from 'node:fs';
@@ -36,6 +36,10 @@ import {
   assertJdk,
   detectRustAnalyzerPlatformKey,
 } from './install.mjs';
+
+/** A build prints a line per compiled file; the default 1 MiB capture would
+ *  kill a large project's build part-way. */
+const BUILD_OUTPUT_MAX_BYTES = 256 * 1024 * 1024;
 
 export const LANGUAGES = {
   typescript: {
@@ -98,7 +102,11 @@ export const LANGUAGES = {
     nodeIndexer: false,
     // scip-java detects Maven or Gradle (and uses the repository's mvnw or
     // gradlew) from the working directory.
-    command: ({ absoluteRoot, output }) => ({ args: ['index', '--output', output], cwd: absoluteRoot }),
+    command: ({ absoluteRoot, output }) => ({
+      args: ['index', '--output', output],
+      cwd: absoluteRoot,
+      maxBuffer: BUILD_OUTPUT_MAX_BYTES,
+    }),
   },
 };
 

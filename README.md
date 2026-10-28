@@ -246,7 +246,7 @@ build uses the JDK your workflow sets up:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: rhumb-org/code-intel-action@v1
+      - uses: rhumb-org/code-intel-upload-action@v1
 ```
 
 scip-java 0.13 needs JDK 17 or newer and, for Gradle builds, Gradle 8 or

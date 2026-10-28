@@ -63,6 +63,21 @@ function nodeIndexerEnv(totalMemBytes) {
   return { ...process.env, NODE_OPTIONS: existing ? `${existing} ${flag}` : flag };
 }
 
+/** How much of a failed build step's output reaches the step summary. */
+const MAX_STEP_MESSAGE_CHARS = 4000;
+
+/**
+ * A build step's captured output can be megabytes. The failure is at its end,
+ * so keep the command line and the last part of the output; the exit code and
+ * signal on the error are untouched.
+ */
+function keepMessageTail(err) {
+  if (!(err instanceof Error) || err.message.length <= MAX_STEP_MESSAGE_CHARS) return err;
+  const [firstLine, ...rest] = err.message.split('\n');
+  err.message = `${firstLine}\n...\n${rest.join('\n').slice(-MAX_STEP_MESSAGE_CHARS)}`;
+  return err;
+}
+
 /**
  * `project` (TypeScript only) is a project file path relative to the root;
  * see the typescript row in languages.mjs.
@@ -84,12 +99,17 @@ export async function runIndexer(lang, absoluteRootDir, bins, { project, outputD
   }
 
   const output = path.join(outputDir ?? absoluteRootDir, SCIP_OUTPUT_NAME);
-  const { args, cwd } = def.command({ absoluteRoot: absoluteRootDir, output, project });
+  const { args, cwd, maxBuffer } = def.command({ absoluteRoot: absoluteRootDir, output, project });
 
   const options = { timeout: INDEXER_TIMEOUT_MS };
   if (cwd !== undefined) options.cwd = cwd;
+  if (maxBuffer !== undefined) options.maxBuffer = maxBuffer;
   if (def.nodeIndexer) options.env = nodeIndexerEnv();
-  await execFileImpl(bins[def.binKey], args, options);
+  try {
+    await execFileImpl(bins[def.binKey], args, options);
+  } catch (err) {
+    throw maxBuffer === undefined ? err : keepMessageTail(err);
+  }
 
   return output;
 }
