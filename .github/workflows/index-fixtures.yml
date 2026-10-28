@@ -1,9 +1,9 @@
 name: index-fixtures
 
-# Manual proof that the Java leg indexes real Maven and Gradle builds and
-# uploads the result. It runs scip-java, which downloads build dependencies,
-# so it has no push or pull_request trigger: dispatch it by hand when the Java
-# leg changes.
+# Manual proof that the Java and C# legs index real builds and upload the
+# result. They run scip-java and scip-dotnet, which download build
+# dependencies, so this has no push or pull_request trigger: dispatch it by
+# hand when one of those legs changes.
 on:
   workflow_dispatch:
 
@@ -30,4 +30,22 @@ jobs:
         with:
           fail-on-error: 'true'
           roots-override: >-
-            {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"]}
+            {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"],"csharp":[]}
+
+  csharp:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.x'
+      # Only the C# fixture: every other language is switched off, and the
+      # two-project solution (App references Lib) is the declared C# root. The
+      # action restores it with the SDK set up above.
+      - name: Index the C# fixture
+        uses: ./
+        with:
+          fail-on-error: 'true'
+          roots-override: >-
+            {"typescript":[],"python":[],"rust":[],"java":[],"csharp":["__tests__/fixtures/csharp-sln-repo"]}
