@@ -102,7 +102,7 @@ test('dry-run: a cpp root declared in .rci-index.yml lists the request sequence,
   });
   assert.match(stdout, /## cpp @ \./);
   assert.match(stdout, /POST https:\/\/rhumb\.sh\/api\/code-intel\/v1\/uploads\s+\{"lang":"cpp","roots":\["\."\]\}/);
-  assert.match(stdout, /PUT  <presigned put_url from create>\s+<gzip'd index\.scip>/);
+  assert.match(stdout, /PUT  <presigned put_url from create>\s+<gzip'd index\.scip: one repo-relative index for all cpp roots>/);
   assert.match(stdout, /uploads\/\{id\}\/complete/);
   assert.doesNotMatch(stdout, /SKIPPED/);
 });
