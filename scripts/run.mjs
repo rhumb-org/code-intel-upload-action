@@ -19,6 +19,11 @@
  * keeps this action out of its required checks gets a red mark on the
  * commit or PR without ever being blocked by it. Never the default.
  *
+ * VERIFY-TIMEOUT (opt-in). A rejection the worker records after this step
+ * exits is invisible to fail-on-error. A `verify-timeout` above zero polls
+ * every upload left in `uploaded` once all pipelines have run (verify.mjs);
+ * it spends runner minutes, so the default is off.
+ *
  * UPLOAD CREATED BEFORE INDEXING. `processRoot` creates the upload FIRST
  * (`door.createUpload`), before install or indexing run, so every later
  * failure -- install, the indexer child dying (e.g. an out-of-memory kill on
@@ -47,12 +52,13 @@ import { runIndexer } from './index-lang.mjs';
 import { UploadDoorClient, describeFailureForDoor } from './door-client.mjs';
 import { uploadIndex } from './upload.mjs';
 import { writeGithubOutput, appendStepSummary } from './gh-output.mjs';
+import { parseVerifyTimeout, verifyUploads } from './verify.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ACTION_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_BASE_URL = 'https://rhumb.sh';
 
-const EMPTY_OUTPUTS = { 'upload-ids': '{}', bytes: '{}', 'durations-ms': '{}' };
+const EMPTY_OUTPUTS = { 'upload-ids': '{}', bytes: '{}', 'durations-ms': '{}', 'verify-statuses': '{}' };
 
 /** Longest response body echoed into the step summary. */
 const MAX_BODY_ECHO_CHARS = 500;
@@ -194,7 +200,7 @@ export async function processRoot({
   }
 }
 
-async function runDryRun(baseUrl, roots, withheld) {
+async function runDryRun(baseUrl, roots, withheld, verifyTimeout) {
   const languages = languagesWithRoots(roots);
   const lines = ['# code-intel-action -- dry run', '', 'No network calls made. Detected languages and roots, and the request sequence a real run would make:', ''];
 
@@ -211,6 +217,9 @@ async function runDryRun(baseUrl, roots, withheld) {
       const indexPath = LANGUAGES[lang].runsBuild ? 'index.scip' : `${root}/index.scip`;
       lines.push(`PUT  <presigned put_url from create>                    <gzip'd ${indexPath}>`);
       lines.push(`POST ${baseUrl}/api/code-intel/v1/uploads/{id}/complete {"sha256":"...","raw_bytes":...}`);
+      if (verifyTimeout > 0) {
+        lines.push(`GET  ${baseUrl}/api/code-intel/v1/uploads/{id}          (polled for up to ${verifyTimeout} s)`);
+      }
       lines.push('```', '');
     }
   }
@@ -233,6 +242,7 @@ async function main() {
   const markFailed = () => {
     if (failOnError) process.exitCode = 1;
   };
+  const { seconds: verifyTimeout, invalid: verifyTimeoutInvalid } = parseVerifyTimeout(env('RCI_VERIFY_TIMEOUT', '0'));
 
   let roots;
   let withheld;
@@ -246,7 +256,7 @@ async function main() {
   }
 
   if (dryRun) {
-    await runDryRun(baseUrl, roots, withheld);
+    await runDryRun(baseUrl, roots, withheld, verifyTimeout);
     return;
   }
 
@@ -255,6 +265,7 @@ async function main() {
   const uploadIds = {};
   const bytes = {};
   const durationsMs = {};
+  const verifyTargets = [];
 
   if (languages.length === 0) {
     summaryLines.push('No indexable language detected under this checkout -- nothing to index or upload.', ...skippedLines(withheld));
@@ -312,8 +323,26 @@ async function main() {
         markFailed();
       } else {
         summaryLines.push(`OK      ${label} -> ${result.status} (upload ${result.uploadId})`);
+        // Only an upload still waiting on the worker has anything to verify.
+        if (result.status === 'uploaded') verifyTargets.push({ label, uploadId: result.uploadId });
       }
     }
+  }
+
+  let verifyStatuses = {};
+  if (verifyTimeoutInvalid) {
+    const note = `verify-timeout "${env('RCI_VERIFY_TIMEOUT', '')}" is not a non-negative number of seconds -- uploads were not verified.`;
+    console.warn(`[code-intel-action] ${note}`);
+    summaryLines.push(note);
+  } else if (verifyTimeout > 0 && verifyTargets.length > 0) {
+    const verified = await verifyUploads({
+      door: new UploadDoorClient({ baseUrl, audience }),
+      targets: verifyTargets,
+      timeoutSeconds: verifyTimeout,
+    });
+    summaryLines.push(...verified.lines);
+    verifyStatuses = verified.statuses;
+    if (verified.failed) markFailed();
   }
 
   summaryLines.push(...skippedLines(withheld));
@@ -322,6 +351,7 @@ async function main() {
     'upload-ids': JSON.stringify(uploadIds),
     bytes: JSON.stringify(bytes),
     'durations-ms': JSON.stringify(durationsMs),
+    'verify-statuses': JSON.stringify(verifyStatuses),
   });
 }
 

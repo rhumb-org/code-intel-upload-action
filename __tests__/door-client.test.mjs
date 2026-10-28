@@ -161,3 +161,25 @@ test('mintOidcToken requires ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN', async () => {
     if (savedToken !== undefined) process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = savedToken;
   }
 });
+
+test('statusUpload GETs the upload and a later, separate 401 is re-minted again', async () => {
+  const seen = [];
+  const statuses = [401, 200, 401, 200];
+  const fetchImpl = async (url, opts) => {
+    seen.push({ method: opts.method, url, body: opts.body });
+    return { status: statuses.shift(), text: async () => '{"id":"up_1","status":"verifying"}' };
+  };
+  let mints = 0;
+  const door = new UploadDoorClient({ baseUrl: 'https://door.test', audience: 'aud', fetchImpl, mintOidcTokenImpl: async () => `jwt-${(mints += 1)}` });
+
+  assert.equal((await door.statusUpload('up_1')).status, 200);
+  assert.equal((await door.statusUpload('up_1')).status, 200);
+
+  assert.equal(mints, 3); // initial mint, then one re-mint per separate expiry
+  assert.equal(seen.length, 4);
+  for (const s of seen) {
+    assert.equal(s.method, 'GET');
+    assert.equal(s.url, 'https://door.test/api/code-intel/v1/uploads/up_1');
+    assert.equal(s.body, undefined);
+  }
+});

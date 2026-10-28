@@ -146,6 +146,17 @@ is when the upload could not be created at all (door unreachable,
 unregistered repository, rejected token): the step summary then shows the
 HTTP status and response body and says it was not recorded.
 
+A rejection Rhumb's worker records after the upload completes (a digest
+mismatch, an ingest cap, a commit it cannot reach) happens after the step has
+exited, so `fail-on-error` alone cannot see it and the run stays green while
+the index never serves. Set `verify-timeout` to a number of seconds to make
+the step wait and check: it polls each upload's status (every 15 s, then every
+30 s) until the worker has published or rejected it, or the budget is spent.
+**This costs runner minutes**: the step stays running, and is billed, for up to
+`verify-timeout` seconds after the uploads. It is off by default. A rejection
+is a `FAILED` line (and a red step with `fail-on-error`); an upload still
+unresolved when the budget runs out is a `PENDING` line, not a failure.
+
 ## Inputs
 
 | Input | Default | Description |
@@ -153,6 +164,7 @@ HTTP status and response body and says it was not recorded.
 | `base-url` | `https://rhumb.sh` | Base URL of the Rhumb Code Intel service. It receives your OIDC token and the index uploads. |
 | `roots-override` | `''` | JSON object overriding detected/declared roots, e.g. `{"typescript":["packages/api"],"python":["services/worker"]}`. See "Root detection" below. |
 | `fail-on-error` | `false` | When `true`, the step exits non-zero once every language/root has been attempted and recorded, if any of them failed to index or upload (or roots could not be resolved or the pinned indexers could not be loaded). Opt in only from a workflow that is not a required check: the upload failure then shows as a red check on the commit or PR without blocking merges. |
+| `verify-timeout` | `0` | Seconds to keep the step running after the uploads, polling each one until Rhumb's worker has published or rejected it. `0` (or empty) does no polling. Polling spends your runner minutes for up to this many seconds. See "Fail-soft" above. |
 | `dry-run` | `false` | Resolve languages/roots and print the request sequence a real run would make. No network calls, no installs, no indexing. |
 
 ## Outputs
@@ -162,6 +174,7 @@ HTTP status and response body and says it was not recorded.
 | `upload-ids` | JSON object mapping `"<language> @ <root>"` -> upload id (or `null` only when the door was unreachable at that pair's own upload-creation call). |
 | `bytes` | JSON object mapping `"<language> @ <root>"` -> `{raw_bytes, compressed_bytes}`. |
 | `durations-ms` | JSON object mapping `"<language> @ <root>"` -> total pipeline duration in milliseconds. |
+| `verify-statuses` | JSON object mapping `"<language> @ <root>"` -> `{status, rejection_reason?}` as last seen while verifying. `{}` unless `verify-timeout` is set. |
 
 ## Root detection
 
