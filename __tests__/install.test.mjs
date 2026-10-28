@@ -8,6 +8,9 @@ import {
   installNpmIndexer,
   installRustAnalyzer,
   installScipJava,
+  installScipDotnet,
+  assertDotnetSdk,
+  MIN_DOTNET_SDK_MAJOR,
   assertJdk,
   parseJdkMajor,
   MIN_JDK_MAJOR,
@@ -229,6 +232,126 @@ test('installScipJava refuses a download URL outside the official scip-java rele
       assert.equal(fetched, false, `${url} must not be fetched`);
     }
   }));
+
+const SCIP_DOTNET_URL = 'https://api.nuget.org/v3-flatcontainer/scip-dotnet/0.2.14/scip-dotnet.0.2.14.nupkg';
+
+test('installScipDotnet refuses a wrong sha256 before writing anything or running dotnet', () =>
+  withTmpDir(async (dir) => {
+    const pin = { version: '0.2.14', url: SCIP_DOTNET_URL, sha256: sha256HexOfBuffer(Buffer.from('the pinned bytes')) };
+    const fetchImpl = async () => ({ ok: true, arrayBuffer: async () => bufToArrayBuffer(Buffer.from('other bytes')) });
+    let ran = false;
+
+    await assert.rejects(
+      () => installScipDotnet(pin, dir, { fetchImpl, execFileImpl: async () => { ran = true; } }),
+      IndexerIntegrityError,
+    );
+    assert.equal(ran, false);
+    assert.deepEqual(await readdir(dir), [], 'a refused download leaves nothing to install');
+  }));
+
+test('installScipDotnet installs the verified package alone, from a config whose only source is the directory holding it', () =>
+  withTmpDir(async (dir) => {
+    const nupkg = Buffer.from('pretend-nupkg-bytes');
+    const pin = { version: '0.2.14', url: SCIP_DOTNET_URL, sha256: sha256HexOfBuffer(nupkg) };
+    const fetchImpl = async () => ({ ok: true, arrayBuffer: async () => bufToArrayBuffer(nupkg) });
+    const calls = [];
+    const execFileImpl = async (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+    };
+
+    const launcher = await installScipDotnet(pin, dir, { fetchImpl, execFileImpl });
+
+    const sourceDir = path.join(dir, 'scip-dotnet-package');
+    assert.deepEqual(await readdir(sourceDir), ['scip-dotnet.0.2.14.nupkg']);
+    assert.deepEqual(await readFile(path.join(sourceDir, 'scip-dotnet.0.2.14.nupkg')), nupkg);
+    const configPath = path.join(dir, 'scip-dotnet-nuget.config');
+    const config = await readFile(configPath, 'utf8');
+    assert.match(config, /<clear \/>/);
+    assert.equal(config.match(/<add /g).length, 1);
+    assert.ok(config.includes(`value="${sourceDir}"`));
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].cmd, 'dotnet');
+    assert.deepEqual(calls[0].args, [
+      'tool', 'install', 'scip-dotnet', '--version', '0.2.14', '--tool-path', path.join(dir, 'scip-dotnet-tool'), '--configfile', configPath,
+    ]);
+    assert.equal(calls[0].opts.env.DOTNET_CLI_TELEMETRY_OPTOUT, '1');
+    assert.equal(calls[0].opts.env.DOTNET_NOLOGO, '1');
+    assert.equal(typeof calls[0].opts.timeout, 'number');
+    assert.equal(launcher, path.join(dir, 'scip-dotnet-tool', 'scip-dotnet'));
+  }));
+
+test('installScipDotnet refuses a download URL outside nuget.org\'s scip-dotnet packages, before fetching', () =>
+  withTmpDir(async (dir) => {
+    const badUrls = [
+      'https://example.test/scip-dotnet.0.2.14.nupkg',
+      'http://api.nuget.org/v3-flatcontainer/scip-dotnet/0.2.14/scip-dotnet.0.2.14.nupkg',
+      'https://api.nuget.org.evil.test/v3-flatcontainer/scip-dotnet/0.2.14/scip-dotnet.0.2.14.nupkg',
+      'https://www.nuget.org/api/v2/package/scip-dotnet/0.2.14',
+      // another package on the same feed is not scip-dotnet
+      'https://api.nuget.org/v3-flatcontainer/some-other-tool/1.0.0/some-other-tool.1.0.0.nupkg',
+      // another indexer's official host is not nuget.org
+      'https://github.com/scip-code/scip-java/releases/download/v0.13.1/scip-java-v0.13.1',
+      'not a url',
+    ];
+    for (const url of badUrls) {
+      let fetched = false;
+      await assert.rejects(
+        () =>
+          installScipDotnet({ version: '0.2.14', url, sha256: 'x' }, dir, {
+            fetchImpl: async () => {
+              fetched = true;
+              return { ok: true };
+            },
+          }),
+        /scip-dotnet pin url/,
+        url,
+      );
+      assert.equal(fetched, false, `${url} must not be fetched`);
+    }
+  }));
+
+test('installScipDotnet surfaces a failed download', () =>
+  withTmpDir(async (dir) => {
+    await assert.rejects(
+      () => installScipDotnet({ version: '0.2.14', url: SCIP_DOTNET_URL, sha256: 'x' }, dir, { fetchImpl: async () => ({ ok: false, status: 503 }) }),
+      /package fetch failed: .* -> 503/,
+    );
+  }));
+
+test('assertDotnetSdk accepts the minimum SDK and newer and rejects older, missing or unreadable ones with the reason', async () => {
+  const dotnetPrinting = (stdout) => async () => ({ stdout, stderr: '' });
+
+  assert.equal(await assertDotnetSdk({ env: {}, execFileImpl: dotnetPrinting('10.0.402\n') }), 10);
+  assert.equal(await assertDotnetSdk({ env: {}, execFileImpl: dotnetPrinting(`${MIN_DOTNET_SDK_MAJOR}.0.428`) }), MIN_DOTNET_SDK_MAJOR);
+  assert.equal(await assertDotnetSdk({ env: {}, execFileImpl: dotnetPrinting('9.0.100-rc.2.24474.11') }), 9);
+
+  await assert.rejects(
+    () => assertDotnetSdk({ env: {}, execFileImpl: dotnetPrinting('5.0.408') }),
+    /needs .NET SDK 6 or newer, but the runner's SDK is 5; add actions\/setup-dotnet/,
+  );
+  await assert.rejects(
+    () =>
+      assertDotnetSdk({
+        env: {},
+        execFileImpl: async () => {
+          throw Object.assign(new Error('spawn dotnet ENOENT'), { code: 'ENOENT' });
+        },
+      }),
+    /needs the .NET SDK on the runner \(dotnet on PATH\) and none was found; add actions\/setup-dotnet/,
+  );
+  await assert.rejects(
+    () =>
+      assertDotnetSdk({
+        env: {},
+        execFileImpl: async () => {
+          throw new Error('A compatible .NET SDK was not found. Requested SDK version: 8.0.100 global.json file: /repo/global.json');
+        },
+      }),
+    /could not run `dotnet --version`: A compatible .NET SDK was not found/,
+  );
+  await assert.rejects(() => assertDotnetSdk({ env: {}, execFileImpl: dotnetPrinting('garbled') }), /could not read the .NET SDK version/);
+});
 
 test('parseJdkMajor reads modern and legacy version strings', () => {
   assert.equal(parseJdkMajor('openjdk version "21.0.12.1" 2026-08-18 LTS'), 21);

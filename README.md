@@ -12,7 +12,7 @@ On each run the action:
 
 1. detects the languages and project roots in the checked-out tree
    (TypeScript, Python, Rust -- see [Root detection](#root-detection); Java
-   only where you declare it -- see [Java](#java));
+   and C# only where you declare them -- see [Java](#java) and [C#](#c));
 2. creates an upload with Rhumb Code Intel, authenticating with your
    workflow's GitHub OIDC token (no long-lived secret);
 3. installs the SCIP indexer for each language at the exact version pinned in
@@ -71,6 +71,9 @@ and install any dependencies your language's indexer needs to resolve types
   `PATH`); see [Java](#java). The action installs none.
 - **Maven or Gradle, for Java only.** Maven, or Gradle 8 or newer -- the
   repository's own wrapper (`mvnw`, `gradlew`) when it has one.
+- **.NET SDK, for C# only.** The SDK your repository builds with on the
+  runner (`dotnet` on `PATH`, .NET 6 or newer); see [C#](#c). The action
+  installs none.
 - **Node.js.** The action installs Node 24 itself with `actions/setup-node`;
   you do not need to provide one. Running the scripts directly requires
   Node 22 or newer.
@@ -79,7 +82,9 @@ and install any dependencies your language's indexer needs to resolve types
   the OIDC token endpoint GitHub provides, and Rhumb Code Intel (`rhumb.sh`
   by default). A Java root also reaches whatever repositories its own
   Maven or Gradle build uses (typically Maven Central and the Gradle plugin
-  portal) and Maven Central for scip-java's compiler plugin.
+  portal) and Maven Central for scip-java's compiler plugin. A C# root
+  reaches `api.nuget.org` for the scip-dotnet package and whatever NuGet
+  feeds its own restore uses.
 - **Memory.** The TypeScript and Python indexers are Node processes that
   type-check your project. Each run gets a heap ceiling of at least 6 GB,
   scaled up to 80% of the runner's memory on larger runners; a large monorepo
@@ -119,9 +124,10 @@ Intel (`base-url`, default `https://rhumb.sh`):
 | `POST /api/code-intel/v1/uploads/{id}/fail` (on failure only) | A failure reason of at most 500 characters: an HTTP status and response summary, or -- when an indexer or `npm` process failed -- only its exit code, signal, and whether it timed out. The command line and the process's output stay in your step summary and are not sent. |
 
 To download indexers it contacts `registry.npmjs.org` and `github.com`; those
-requests carry no data from your repository. Indexing a Java root runs your
-own build, which contacts the repositories it is configured for, exactly as
-your normal CI does. Because `base-url` receives your
+requests carry no data from your repository (the scip-dotnet package comes
+from `api.nuget.org`). Indexing a Java or C# root runs your own build, which
+contacts the repositories and feeds it is configured for, exactly as your
+normal CI does. Because `base-url` receives your
 OIDC token and your index, point it only at a service you trust.
 
 `dry-run: true` prints the request sequence without any network call, which
@@ -182,6 +188,8 @@ project marker:
   `build.gradle.kts`, `settings.gradle`, or `settings.gradle.kts`. Unlike the
   others, Java roots are never indexed from detection alone: see
   [Java](#java).
+- **C#** — a directory with a `*.sln`, `*.slnx`, or `*.csproj` file. Like
+  Java, C# roots are never indexed from detection alone: see [C#](#c).
 
 **Topmost marker wins.** Once a directory matches a language's marker, the
 walk does not look for that *same* language any further down that
@@ -256,6 +264,56 @@ uses the repository's `mvnw` or `gradlew` when present, otherwise `mvn` or
 checkout, and the build's own output (`target/`, `build/`) stays in the
 workspace as in any build.
 
+### C#
+
+Indexing C# runs a NuGet restore and then loads your solution through
+MSBuild (scip-dotnet opens the projects the way Visual Studio does, which
+executes your build logic, source generators and analyzers), so it runs in your CI, on
+your runner and credentials, and it costs build minutes. It is therefore
+**opt-in**, exactly like Java: a repository that does not declare C# roots
+spends no CI time on it. When the walk finds a solution or project that is
+not declared, the step summary says so and indexes nothing:
+
+```
+SKIPPED  csharp @ .: C# indexing runs your MSBuild restore and project load; declare its roots in .rci-index.yml to enable it.
+```
+
+Declare the roots in `.rci-index.yml` (or the `roots-override` input), naming
+the directory that holds the solution -- the topmost `*.sln` / `*.slnx`, or the
+`*.csproj` of a project with no solution; one root covers every project in the
+solution. An explicit `csharp: []` silences the notice.
+
+```yaml
+roots:
+  csharp:
+    - .
+```
+
+The runner needs the .NET SDK before this step; the action installs none, so
+the restore and project load use the SDK your workflow sets up -- the one your
+`global.json` asks for, if you have one:
+
+```yaml
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+      - uses: rhumb-org/code-intel-upload-action@v1
+```
+
+For each root the action runs `dotnet restore` on its solution (every `*.sln`
+and `*.slnx` in the directory, else its `*.csproj`), then scip-dotnet, in that
+directory and without restoring a second time. Restore uses the NuGet feeds and
+credentials your repository and runner already have, so a private feed works the
+same way it does in your normal CI (for example, `actions/setup-dotnet` with
+`source-url` and `NUGET_AUTH_TOKEN`, or a credential provider). The index is written to a scratch directory outside your
+checkout; the restore and project load still write `obj/` in the workspace as any
+build does. scip-dotnet is installed from the pinned, hash-verified package
+alone -- not from any feed in your NuGet configuration.
+
+The index describes the projects as MSBuild loads them, so files your build
+generates (under `obj/`) appear in it next to your sources.
+
 ### `.rci-index.yml`
 
 An optional file at the repo root, checked in by the tenant, declaring
@@ -270,6 +328,8 @@ roots:
   rust:
     - .
   java:
+    - .
+  csharp:
     - .
 ```
 
@@ -331,19 +391,27 @@ there as `OK`, `FAILED`, or `SKIPPED` with its reason.
 | `Java indexing needs a JDK 17+ on the runner ... none was found` or `... the runner's JDK is 11` | Add `actions/setup-java` with JDK 17 or newer before this step. |
 | A Java root fails with `child process failed (exit code ...)` | Your Maven or Gradle build failed under scip-java; run `scip-java index` locally in that directory to see the build output, which stays in the step summary and is not sent to Rhumb. Gradle must be 8 or newer. |
 | `the root has none of java's build files` | The declared Java root is not the directory holding `pom.xml` / `build.gradle(.kts)` / `settings.gradle(.kts)`. |
+| `SKIPPED  csharp @ ...: C# indexing runs your MSBuild restore and project load; declare its roots ...` | C# is opt-in. Declare the root in `.rci-index.yml` (see [C#](#c)). |
+| `C# indexing needs the .NET SDK on the runner ... none was found` or `... the runner's SDK is 5` | Add `actions/setup-dotnet` (the SDK your `global.json` asks for) before this step. |
+| `C# indexing could not run \`dotnet --version\`: A compatible .NET SDK was not found` | Your `global.json` pins an SDK the runner does not have; set it up with `actions/setup-dotnet` and `global-json-file`. |
+| A C# root fails with `child process failed ... dotnet restore` | NuGet restore failed -- usually a private feed without credentials on the runner. Run `dotnet restore` on the solution in that directory with the workflow's credentials; its output stays in the step summary and is not sent to Rhumb. |
+| A C# root fails in `scip-dotnet` after a successful restore | MSBuild could not load a project (a workload, target framework or SDK the runner lacks). Run `dotnet build` on the solution in that directory to see why. |
+| `the root has none of csharp's build files` | The declared C# root is not the directory holding the `*.sln` / `*.slnx` / `*.csproj`. |
 
 ## Pinned indexers
 
 [`indexer-pins.json`](indexer-pins.json) pins the exact `scip-typescript` and
 `scip-python` npm versions (with their `sha512` integrity), the
-`rust-analyzer` release (with a `sha256` per platform), and the `scip-java`
-release (one platform-independent asset with its `sha256`). They ship with each
+`rust-analyzer` release (with a `sha256` per platform), the `scip-java`
+release (one platform-independent asset with its `sha256`), and the
+`scip-dotnet` package from nuget.org (with its `sha256`). They ship with each
 release of this action, so the indexers a workflow installs are decided by
 the action version it references -- never by the `base-url` host. Downloaded
 artifacts are hashed and compared before they are installed or executed, and
 the rust-analyzer and scip-java downloads are restricted to the official
 `github.com/rust-lang/rust-analyzer` and `github.com/scip-code/scip-java`
-releases. To bump an indexer, update the
+releases, and the scip-dotnet download to
+`api.nuget.org/v3-flatcontainer/scip-dotnet/`. To bump an indexer, update the
 version together with a checksum recomputed from the published artifact.
 
 ## License

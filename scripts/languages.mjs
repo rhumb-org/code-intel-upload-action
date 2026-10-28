@@ -9,9 +9,10 @@
  *   indexerName / indexerVersion(pins)  what the upload records as the indexer
  *   binKey                              the indexer's key in the installed `bins`
  *   install(pins, binDir)               installs and verifies it; returns the binary path
- *   markers                             root markers as OR-ed groups of AND-ed files
+ *   markers                             root markers as OR-ed groups of AND-ed files;
+ *                                       `*.ext` matches any file with that extension
  *   runsBuild                           indexing runs the repository's own build
- *                                       (Maven, Gradle). Such a language is
+ *                                       (Maven, Gradle, MSBuild). Such a language is
  *                                       opt-in: its roots come only from
  *                                       `.rci-index.yml` or `roots-override`,
  *                                       never from auto-detection (see
@@ -23,23 +24,48 @@
  *   acceptsProject                      a root entry may name a `project` file
  *   nodeIndexer                         the indexer is a Node process that needs a
  *                                       sized heap (see index-lang.mjs)
+ *   prepare({absoluteRoot})             (optional) steps that run before the indexer, in
+ *                                       order, each { file, args, cwd?, env? }
  *   command({absoluteRoot, output, project})
- *                                       -> { args, cwd?, maxBuffer? } for the indexer binary
+ *                                       -> { args, cwd?, env?, maxBuffer? } for the indexer binary
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import {
   installNpmIndexer,
   installRustAnalyzer,
   installScipJava,
+  installScipDotnet,
   assertJdk,
+  assertDotnetSdk,
   detectRustAnalyzerPlatformKey,
+  DOTNET_CLI_ENV,
 } from './install.mjs';
 
 /** A build prints a line per compiled file; the default 1 MiB capture would
  *  kill a large project's build part-way. */
 const BUILD_OUTPUT_MAX_BYTES = 256 * 1024 * 1024;
+
+/**
+ * The solution files in a C# root (`.sln`, `.slnx`), else its project files
+ * (`.csproj`), as absolute paths. A root with several solutions indexes all
+ * of them; scip-dotnet indexes a project reachable from more than one only once.
+ */
+function csharpProjectFiles(absoluteRoot) {
+  let names;
+  try {
+    names = readdirSync(absoluteRoot, { withFileTypes: true })
+      .filter((entry) => !entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+  const solutions = names.filter((name) => /\.slnx?$/i.test(name));
+  const files = solutions.length > 0 ? solutions : names.filter((name) => /\.csproj$/i.test(name));
+  return files.map((name) => path.join(absoluteRoot, name));
+}
 
 export const LANGUAGES = {
   typescript: {
@@ -106,6 +132,37 @@ export const LANGUAGES = {
       args: ['index', '--output', output],
       cwd: absoluteRoot,
       maxBuffer: BUILD_OUTPUT_MAX_BYTES,
+    }),
+  },
+  csharp: {
+    indexerName: 'scip-dotnet',
+    indexerVersion: (pins) => pins['scip-dotnet']?.version ?? '',
+    binKey: 'scipDotnet',
+    // The .NET SDK is the runner's own; check it before spending the download.
+    install: async (pins, binDir) => {
+      await assertDotnetSdk();
+      return installScipDotnet(pins['scip-dotnet'], binDir);
+    },
+    // A solution, or else a project; the topmost marker wins, so a solution and
+    // the projects under it are one root.
+    markers: [['*.sln'], ['*.slnx'], ['*.csproj']],
+    runsBuild: true,
+    optInNotice: 'C# indexing runs your MSBuild restore and project load; declare its roots in .rci-index.yml to enable it.',
+    acceptsProject: false,
+    nodeIndexer: false,
+    // scip-dotnet loads projects through MSBuild, which needs the NuGet
+    // packages restored. The action restores them itself (with the runner's
+    // credentials and feeds) and tells scip-dotnet not to restore again. A
+    // positional project is resolved against the process's cwd, not against
+    // --working-directory, so both are the root.
+    prepare: ({ absoluteRoot }) =>
+      csharpProjectFiles(absoluteRoot).map((file) => ({ file: 'dotnet', args: ['restore', file], cwd: absoluteRoot, env: DOTNET_CLI_ENV })),
+    command: ({ absoluteRoot, output }) => ({
+      args: ['index', '--output', output, '--working-directory', absoluteRoot, '--skip-dotnet-restore', ...csharpProjectFiles(absoluteRoot)],
+      cwd: absoluteRoot,
+      // The package's newest build targets the SDK the runner has; Major lets it
+      // also run on a newer runtime than any build it ships (see the pin's note).
+      env: { ...DOTNET_CLI_ENV, DOTNET_ROLL_FORWARD: 'Major' },
     }),
   },
 };

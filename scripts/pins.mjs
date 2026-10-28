@@ -3,7 +3,8 @@
  * the action, which pins every indexer this action installs: npm version +
  * integrity for the two Node indexers, release tag + per-platform URL +
  * sha256 for rust-analyzer, version + URL + sha256 of the one
- * platform-independent scip-java asset. The pins travel with the action's own tag, so
+ * platform-independent scip-java asset, version + nuget.org URL + sha256 of
+ * the scip-dotnet package. The pins travel with the action's own tag, so
  * what a workflow installs is decided by the action version it references --
  * never by the `base-url` host, which only ever receives uploads.
  */
@@ -42,6 +43,10 @@ function validatePins(pins) {
   requireString(java?.version, 'scip-java.version');
   requireString(java?.url, 'scip-java.url');
   requireString(java?.sha256, 'scip-java.sha256');
+  const dotnet = pins?.['scip-dotnet'];
+  requireString(dotnet?.version, 'scip-dotnet.version');
+  requireString(dotnet?.url, 'scip-dotnet.url');
+  requireString(dotnet?.sha256, 'scip-dotnet.sha256');
   return pins;
 }
 

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { loadIndexerPins, PINS_PATH } from '../scripts/pins.mjs';
-import { installRustAnalyzer, installScipJava } from '../scripts/install.mjs';
+import { installRustAnalyzer, installScipJava, installScipDotnet } from '../scripts/install.mjs';
 
 test('the shipped indexer-pins.json loads and carries a pin for every supported indexer and platform', async () => {
   const pins = await loadIndexerPins();
@@ -43,6 +43,31 @@ test('the scip-java pin is one official github.com release asset for the pinned 
   assert.equal(pin.url, `https://github.com/scip-code/scip-java/releases/download/v${pin.version}/scip-java-v${pin.version}`);
   // The host check runs before the fetch, so a refusing fetch seam proves it passed.
   await assert.rejects(() => installScipJava(pin, os.tmpdir(), async () => ({ ok: false, status: 599 })), /asset fetch failed: .* -> 599/);
+});
+
+test('the scip-dotnet pin is the nuget.org package for the pinned version, with a sha256', async () => {
+  const pin = (await loadIndexerPins())['scip-dotnet'];
+  assert.match(pin.version, /^\d+\.\d+\.\d+$/);
+  assert.match(pin.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(pin.url, `https://api.nuget.org/v3-flatcontainer/scip-dotnet/${pin.version}/scip-dotnet.${pin.version}.nupkg`);
+  // The host check runs before the fetch, so a refusing fetch seam proves it passed.
+  await assert.rejects(
+    () => installScipDotnet(pin, os.tmpdir(), { fetchImpl: async () => ({ ok: false, status: 599 }) }),
+    /package fetch failed: .* -> 599/,
+  );
+});
+
+test('loadIndexerPins rejects a pin file without the scip-dotnet pin', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rci-pins-'));
+  try {
+    const pins = JSON.parse(await readFile(PINS_PATH, 'utf8'));
+    delete pins['scip-dotnet'].sha256;
+    const file = path.join(dir, 'indexer-pins.json');
+    await writeFile(file, JSON.stringify(pins));
+    await assert.rejects(() => loadIndexerPins(file), /scip-dotnet\.sha256/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('loadIndexerPins rejects a pin file without the scip-java pin', async () => {
