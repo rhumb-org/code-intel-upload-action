@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { detectRoots, mergeRoots } from '../scripts/detect.mjs';
 import { loadRciIndexConfig } from '../scripts/rci-index-config.mjs';
+import { KNOWN_LANGUAGES } from '../scripts/languages.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -35,7 +36,7 @@ test('finds nested monorepo roots and does not detect typescript from package.js
 
 test('reports nothing for a repo with no recognized markers', async () => {
   const roots = await detectRoots(path.join(FIXTURES, 'empty-repo'));
-  assert.deepEqual(roots, { typescript: [], python: [], rust: [], java: [], csharp: [] });
+  assert.deepEqual(roots, Object.fromEntries(KNOWN_LANGUAGES.map((lang) => [lang, []])));
 });
 
 // Topmost marker wins: a workspace/project root is ONE index root; a nested

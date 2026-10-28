@@ -12,7 +12,13 @@ On each run the action:
 
 1. detects the languages and project roots in the checked-out tree
    (TypeScript, Python, Rust -- see [Root detection](#root-detection); Java
-   and C# only where you declare them -- see [Java](#java) and [C#](#c));
+<<<<<<< HEAD
+   C#, and C/C++ only where you declare them -- see [Java](#java),
+   [C#](#c) and [C/C++](#cc));
+=======
+   and C/C++ only where you declare them -- see [Java](#java) and
+   [C/C++](#cc));
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
 2. creates an upload with Rhumb Code Intel, authenticating with your
    workflow's GitHub OIDC token (no long-lived secret);
 3. installs the SCIP indexer for each language at the exact version pinned in
@@ -71,9 +77,17 @@ and install any dependencies your language's indexer needs to resolve types
   `PATH`); see [Java](#java). The action installs none.
 - **Maven or Gradle, for Java only.** Maven, or Gradle 8 or newer -- the
   repository's own wrapper (`mvnw`, `gradlew`) when it has one.
+<<<<<<< HEAD
 - **.NET SDK, for C# only.** The SDK your repository builds with on the
   runner (`dotnet` on `PATH`, .NET 6 or newer); see [C#](#c). The action
   installs none.
+=======
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
+- **Linux x64, a C/C++ toolchain and `python3` with `pip`, for C/C++ only.**
+  scip-clang v0.4.0 ships a Linux x64 build only (the GitHub-hosted
+  `ubuntu-latest` runner qualifies). The compiler, `make` or `ninja`, and your
+  project's own system dependencies must already be on the runner; see
+  [C/C++](#cc). The action installs the pinned CMake itself.
 - **Node.js.** The action installs Node 24 itself with `actions/setup-node`;
   you do not need to provide one. Running the scripts directly requires
   Node 22 or newer.
@@ -82,15 +96,25 @@ and install any dependencies your language's indexer needs to resolve types
   the OIDC token endpoint GitHub provides, and Rhumb Code Intel (`rhumb.sh`
   by default). A Java root also reaches whatever repositories its own
   Maven or Gradle build uses (typically Maven Central and the Gradle plugin
+<<<<<<< HEAD
   portal) and Maven Central for scip-java's compiler plugin. A C# root
   reaches `api.nuget.org` for the scip-dotnet package and whatever NuGet
-  feeds its own restore uses.
+  feeds its own restore uses. A C/C++ root also reaches
+  `files.pythonhosted.org` (the pinned CMake wheel) and whatever your CMake
+  configure and build fetch.
+=======
+  portal) and Maven Central for scip-java's compiler plugin. A C/C++ root
+  also reaches `files.pythonhosted.org` (the pinned CMake wheel) and whatever
+  your CMake configure and build fetch.
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
 - **Memory.** The TypeScript and Python indexers are Node processes that
   type-check your project. Each run gets a heap ceiling of at least 6 GB,
   scaled up to 80% of the runner's memory on larger runners; a large monorepo
   may need a larger runner.
 - **Time.** Every network call and every indexer process has a timeout
-  (indexing one root: 60 minutes). Set `timeout-minutes` on the job as well.
+  (indexing one root: 60 minutes; a C/C++ root's CMake configure, build and
+  scip-clang run each get their own 60 minutes). Set `timeout-minutes` on the
+  job as well.
 
 ## Onboarding
 
@@ -124,10 +148,17 @@ Intel (`base-url`, default `https://rhumb.sh`):
 | `POST /api/code-intel/v1/uploads/{id}/fail` (on failure only) | A failure reason of at most 500 characters: an HTTP status and response summary, or -- when an indexer or `npm` process failed -- only its exit code, signal, and whether it timed out. The command line and the process's output stay in your step summary and are not sent. |
 
 To download indexers it contacts `registry.npmjs.org` and `github.com`; those
+<<<<<<< HEAD
 requests carry no data from your repository (the scip-dotnet package comes
-from `api.nuget.org`). Indexing a Java or C# root runs your own build, which
-contacts the repositories and feeds it is configured for, exactly as your
-normal CI does. Because `base-url` receives your
+from `api.nuget.org`, the CMake wheel from `files.pythonhosted.org`).
+Indexing a Java, C# or C/C++ root runs your own build, which contacts the
+repositories and feeds it is configured for, exactly as your normal CI does.
+Because `base-url` receives your
+=======
+requests carry no data from your repository. Indexing a Java or C/C++ root
+runs your own build, which contacts the repositories it is configured for,
+exactly as your normal CI does. Because `base-url` receives your
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
 OIDC token and your index, point it only at a service you trust.
 
 `dry-run: true` prints the request sequence without any network call, which
@@ -188,8 +219,14 @@ project marker:
   `build.gradle.kts`, `settings.gradle`, or `settings.gradle.kts`. Unlike the
   others, Java roots are never indexed from detection alone: see
   [Java](#java).
+<<<<<<< HEAD
 - **C#** — a directory with a `*.sln`, `*.slnx`, or `*.csproj` file. Like
   Java, C# roots are never indexed from detection alone: see [C#](#c).
+=======
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
+- **C/C++** — a directory with `CMakeLists.txt`. Like Java, C/C++ roots are
+  never indexed from detection alone: see [C/C++](#cc). Meson projects, and
+  builds captured by other means than CMake, are not supported.
 
 **Topmost marker wins.** Once a directory matches a language's marker, the
 walk does not look for that *same* language any further down that
@@ -264,6 +301,7 @@ uses the repository's `mvnw` or `gradlew` when present, otherwise `mvn` or
 checkout, and the build's own output (`target/`, `build/`) stays in the
 workspace as in any build.
 
+<<<<<<< HEAD
 ### C#
 
 Indexing C# runs a NuGet restore and then loads your solution through
@@ -314,6 +352,57 @@ alone -- not from any feed in your NuGet configuration.
 The index describes the projects as MSBuild loads them, so files your build
 generates (under `obj/`) appear in it next to your sources.
 
+=======
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
+### C/C++
+
+Indexing C/C++ runs your CMake configure and build (scip-clang reads the
+compilation database the configure writes, and the build creates any generated
+headers), so it runs in your CI, on your runner, and costs build minutes. It is
+therefore **opt-in**, like Java: a repository that does not declare C/C++ roots
+spends no CI time on it. When the walk finds a `CMakeLists.txt` that is not
+declared, the step summary says so and indexes nothing:
+
+```
+SKIPPED  cpp @ .: C/C++ indexing runs your CMake configure and build; declare its roots in .rci-index.yml to enable it.
+```
+
+Declare the roots in `.rci-index.yml` (or the `roots-override` input), naming
+the directory with the top-level `CMakeLists.txt`; one root covers its
+`add_subdirectory` members. An explicit `cpp: []` silences the notice.
+
+```yaml
+roots:
+  cpp:
+    - .
+```
+
+For each root the action runs, in order, `cmake -S <root> -B <scratch>
+-DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5`, then
+`cmake --build <scratch> -j <cpu count>`, then scip-clang over the resulting
+`compile_commands.json`, run from the root. The build tree and the index go to
+a scratch directory outside your checkout, so the build never writes into your
+source tree. The `cmake` it runs is the pinned release the action installs, not
+the one on the runner.
+
+Install your project's system dependencies (compilers, `-dev` packages, `ninja`
+if the project needs it) in the workflow before this step; the action installs
+only CMake and scip-clang:
+
+```yaml
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev
+<<<<<<< HEAD
+      - uses: rhumb-org/code-intel-upload-action@v1
+=======
+      - uses: rhumb-org/code-intel-action@v1
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
+```
+
+scip-clang also asks the compiler named in each compile command for its
+search paths, so that compiler must still be on the runner. Only CMake
+projects are supported.
+
 ### `.rci-index.yml`
 
 An optional file at the repo root, checked in by the tenant, declaring
@@ -329,7 +418,12 @@ roots:
     - .
   java:
     - .
+<<<<<<< HEAD
   csharp:
+    - .
+=======
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
+  cpp:
     - .
 ```
 
@@ -390,6 +484,8 @@ there as `OK`, `FAILED`, or `SKIPPED` with its reason.
 | `SKIPPED  java @ ...: Java indexing runs your Maven or Gradle build; declare its roots ...` | Java is opt-in. Declare the root in `.rci-index.yml` (see [Java](#java)). |
 | `Java indexing needs a JDK 17+ on the runner ... none was found` or `... the runner's JDK is 11` | Add `actions/setup-java` with JDK 17 or newer before this step. |
 | A Java root fails with `child process failed (exit code ...)` | Your Maven or Gradle build failed under scip-java; run `scip-java index` locally in that directory to see the build output, which stays in the step summary and is not sent to Rhumb. Gradle must be 8 or newer. |
+| `SKIPPED  cpp @ ...: C/C++ indexing runs your CMake configure and build; declare its roots ...` | C/C++ is opt-in. Declare the root in `.rci-index.yml` (see [C/C++](#cc)). |
+| A C/C++ root fails with `C/C++ indexing needs a CMake project`, `unsupported platform for scip-clang`, or `child process failed (exit code ...)` | The declared root has no `CMakeLists.txt` (name the directory that holds the top-level one); the runner is not Linux x64 (scip-clang v0.4.0 ships no other build); or your CMake configure, build or scip-clang failed -- the step summary keeps the tail of the failing command's output (it is not sent to Rhumb), and a missing compiler or system dependency is the usual cause, so install them before this step. |
 | `the root has none of java's build files` | The declared Java root is not the directory holding `pom.xml` / `build.gradle(.kts)` / `settings.gradle(.kts)`. |
 | `SKIPPED  csharp @ ...: C# indexing runs your MSBuild restore and project load; declare its roots ...` | C# is opt-in. Declare the root in `.rci-index.yml` (see [C#](#c)). |
 | `C# indexing needs the .NET SDK on the runner ... none was found` or `... the runner's SDK is 5` | Add `actions/setup-dotnet` (the SDK your `global.json` asks for) before this step. |
@@ -403,15 +499,31 @@ there as `OK`, `FAILED`, or `SKIPPED` with its reason.
 [`indexer-pins.json`](indexer-pins.json) pins the exact `scip-typescript` and
 `scip-python` npm versions (with their `sha512` integrity), the
 `rust-analyzer` release (with a `sha256` per platform), the `scip-java`
-release (one platform-independent asset with its `sha256`), and the
-`scip-dotnet` package from nuget.org (with its `sha256`). They ship with each
-release of this action, so the indexers a workflow installs are decided by
+<<<<<<< HEAD
+release (one platform-independent asset with its `sha256`), the
+`scip-dotnet` package from nuget.org (with its `sha256`), the `scip-clang`
+release (Linux x64, with its `sha256`) and the CMake wheel its build runs
+(installed with `pip --require-hashes`, so pip refuses any other bytes). They
+ship with each release of this action, so the indexers a workflow installs are
+decided by the action version it references -- never by the `base-url` host.
+Downloaded artifacts are hashed and compared before they are installed or
+executed, and the rust-analyzer, scip-java and scip-clang downloads are
+restricted to the official `github.com/rust-lang/rust-analyzer`,
+`github.com/scip-code/scip-java` and `github.com/sourcegraph/scip-clang`
+releases, the scip-dotnet download to
+`api.nuget.org/v3-flatcontainer/scip-dotnet/`, and the CMake wheel to
+=======
+release (one platform-independent asset with its `sha256`), the `scip-clang`
+release (Linux x64, with its `sha256`) and the CMake wheel its build runs
+(installed with `pip --require-hashes`, so pip refuses any other bytes). They
+ship with each release of this action, so the indexers a workflow installs are decided by
 the action version it references -- never by the `base-url` host. Downloaded
 artifacts are hashed and compared before they are installed or executed, and
-the rust-analyzer and scip-java downloads are restricted to the official
-`github.com/rust-lang/rust-analyzer` and `github.com/scip-code/scip-java`
-releases, and the scip-dotnet download to
-`api.nuget.org/v3-flatcontainer/scip-dotnet/`. To bump an indexer, update the
+the rust-analyzer, scip-java and scip-clang downloads are restricted to the
+official `github.com/rust-lang/rust-analyzer`, `github.com/scip-code/scip-java`
+and `github.com/sourcegraph/scip-clang` releases, and the CMake wheel to
+>>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
+`files.pythonhosted.org`. To bump an indexer, update the
 version together with a checksum recomputed from the published artifact.
 
 ## License
