@@ -24,11 +24,7 @@ function escapeRegExp(text) {
 }
 
 test('every language has a complete table row', async () => {
-<<<<<<< HEAD
   assert.deepEqual(KNOWN_LANGUAGES, ['typescript', 'python', 'rust', 'java', 'csharp', 'cpp']);
-=======
-  assert.deepEqual(KNOWN_LANGUAGES, ['typescript', 'python', 'rust', 'java', 'cpp']);
->>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
   const pins = await loadIndexerPins();
   for (const lang of KNOWN_LANGUAGES) {
     const def = LANGUAGES[lang];
@@ -51,13 +47,8 @@ test('bin keys are distinct, so the installed indexers never overwrite one anoth
   assert.equal(new Set(keys).size, keys.length);
 });
 
-<<<<<<< HEAD
 test('java, csharp and cpp are the build-running languages; the others are not', () => {
   assert.deepEqual(BUILD_RUNNING_LANGUAGES, ['java', 'csharp', 'cpp']);
-=======
-test('java and cpp are the build-running languages; the others are not', () => {
-  assert.deepEqual(BUILD_RUNNING_LANGUAGES, ['java', 'cpp']);
->>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
   assert.equal(LANGUAGES.java.optInNotice, JAVA_NOTICE);
   assert.equal(LANGUAGES.csharp.optInNotice, CSHARP_NOTICE);
 });

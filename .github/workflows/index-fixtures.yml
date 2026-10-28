@@ -1,17 +1,10 @@
 name: index-fixtures
 
 # Manual proof that the build-running legs index real builds and upload the
-<<<<<<< HEAD
 # result: Java (scip-java over Maven and Gradle), C# (scip-dotnet after a
 # dotnet restore) and C/C++ (a CMake configure and build, then scip-clang, a
 # 142 MB download). They download build dependencies, so this has no push or
 # pull_request trigger: dispatch it by hand when one of those legs changes.
-=======
-# result: Java (scip-java over Maven and Gradle, which download build
-# dependencies) and C/C++ (a CMake configure and build, then scip-clang, a
-# 142 MB download). It has no push or pull_request trigger: dispatch it by
-# hand when one of those legs changes.
->>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
 on:
   workflow_dispatch:
 
@@ -38,7 +31,6 @@ jobs:
         with:
           fail-on-error: 'true'
           roots-override: >-
-<<<<<<< HEAD
             {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"],"csharp":[],"cpp":[]}
 
   csharp:
@@ -58,9 +50,6 @@ jobs:
           fail-on-error: 'true'
           roots-override: >-
             {"typescript":[],"python":[],"rust":[],"java":[],"csharp":["__tests__/fixtures/csharp-sln-repo"],"cpp":[]}
-=======
-            {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"]}
->>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)
 
   cpp:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -75,8 +64,4 @@ jobs:
         with:
           fail-on-error: 'true'
           roots-override: >-
-<<<<<<< HEAD
             {"typescript":[],"python":[],"rust":[],"java":[],"csharp":[],"cpp":["__tests__/fixtures/cpp-cmake-repo"]}
-=======
-            {"typescript":[],"python":[],"rust":[],"java":[],"cpp":["__tests__/fixtures/cpp-cmake-repo"]}
->>>>>>> 928b37c (TRK-22595: C/C++ tests, README, index-fixtures cpp job)

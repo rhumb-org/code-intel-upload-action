@@ -80,7 +80,7 @@ function validateRootsShape(obj, sourceLabel) {
 
 /**
  * Resolves the roots to index, and the roots withheld as opt-in: a language
- * that runs the repository's build (Java, C/C++) is indexed only when
+ * that runs the repository's build (Java, C#, C/C++) is indexed only when
  * `.rci-index.yml` or `roots-override` names it (an explicit `[]` included --
  * that is a decision, not an omission), so a detected root of it that nothing
  * declares is reported as skipped instead.
