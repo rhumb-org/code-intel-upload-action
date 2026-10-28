@@ -173,13 +173,21 @@ export const LANGUAGES = {
     // positional project is resolved against the process's cwd, not against
     // --working-directory, so both are the root.
     prepare: ({ absoluteRoot }) =>
-      csharpProjectFiles(absoluteRoot).map((file) => ({ file: 'dotnet', args: ['restore', file], cwd: absoluteRoot, env: DOTNET_CLI_ENV })),
+      csharpProjectFiles(absoluteRoot).map((file) => ({
+        file: 'dotnet',
+        args: ['restore', file],
+        cwd: absoluteRoot,
+        env: DOTNET_CLI_ENV,
+        maxBuffer: BUILD_OUTPUT_MAX_BYTES,
+      })),
     command: ({ absoluteRoot, output }) => ({
       args: ['index', '--output', output, '--working-directory', absoluteRoot, '--skip-dotnet-restore', ...csharpProjectFiles(absoluteRoot)],
       cwd: absoluteRoot,
       // The package's newest build targets the SDK the runner has; Major lets it
       // also run on a newer runtime than any build it ships (see the pin's note).
       env: { ...DOTNET_CLI_ENV, DOTNET_ROLL_FORWARD: 'Major' },
+      // MSBuild workspace loading can print as much as a build.
+      maxBuffer: BUILD_OUTPUT_MAX_BYTES,
     }),
   },
   cpp: {

@@ -172,6 +172,29 @@ test('runIndexer restores a csharp root, then runs scip-dotnet in it without res
   assert.equal(calls[1].opts.env.DOTNET_ROLL_FORWARD, 'Major');
 });
 
+test('runIndexer gives the csharp restore and index calls the large output buffer, and keeps only the tail of a failure', async () => {
+  const root = `${FIXTURES}csharp-sln-repo`;
+  const calls = [];
+  await runIndexer('csharp', root, { scipDotnet: '/tools/scip-dotnet' }, {
+    outputDir: '/scratch/pair',
+    execFileImpl: async (bin, args, opts) => calls.push({ bin, opts }),
+  });
+  assert.deepEqual(calls.map((call) => call.opts.maxBuffer), [256 * 1024 * 1024, 256 * 1024 * 1024]);
+
+  for (const failing of ['dotnet', '/tools/scip-dotnet']) {
+    const failure = Object.assign(new Error(`Command failed: ${failing}\n${'loading\n'.repeat(5000)}the last line`), { code: 1 });
+    await assert.rejects(
+      () =>
+        runIndexer('csharp', root, { scipDotnet: '/tools/scip-dotnet' }, {
+          execFileImpl: async (bin) => {
+            if (bin === failing) throw failure;
+          },
+        }),
+      (err) => err === failure && err.code === 1 && err.message.length < 4100 && err.message.endsWith('the last line'),
+    );
+  }
+});
+
 test('runIndexer on a csharp root whose restore fails does not start the indexer', async () => {
   const started = [];
   await assert.rejects(
