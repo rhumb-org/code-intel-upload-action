@@ -147,6 +147,60 @@ test('runIndexer on a java root without a build file fails with that reason and 
   assert.equal(started, false);
 });
 
+test('runIndexer restores a csharp root, then runs scip-dotnet in it without restoring again', async () => {
+  const root = `${FIXTURES}csharp-sln-repo`;
+  const sln = `${root}/Fixture.sln`;
+  const calls = [];
+  const output = await runIndexer('csharp', root, { scipDotnet: '/tools/scip-dotnet' }, {
+    outputDir: '/scratch/pair',
+    execFileImpl: async (bin, args, opts) => calls.push({ bin, args, opts }),
+  });
+
+  assert.equal(output, `/scratch/pair/${SCIP_OUTPUT_NAME}`);
+  assert.deepEqual(calls.map((call) => [call.bin, call.args]), [
+    ['dotnet', ['restore', sln]],
+    ['/tools/scip-dotnet', ['index', '--output', `/scratch/pair/${SCIP_OUTPUT_NAME}`, '--working-directory', root, '--skip-dotnet-restore', sln]],
+  ]);
+  for (const call of calls) {
+    assert.equal(call.opts.cwd, root);
+    assert.equal(call.opts.timeout, INDEXER_TIMEOUT_MS);
+    assert.equal(call.opts.env.DOTNET_CLI_TELEMETRY_OPTOUT, '1');
+    assert.equal(call.opts.env.DOTNET_NOLOGO, '1');
+    assert.equal(call.opts.env.NODE_OPTIONS, process.env.NODE_OPTIONS, 'no Node heap flag for a .NET child');
+  }
+  assert.equal(calls[0].opts.env.DOTNET_ROLL_FORWARD, process.env.DOTNET_ROLL_FORWARD, 'the restore runs under the SDK as-is');
+  assert.equal(calls[1].opts.env.DOTNET_ROLL_FORWARD, 'Major');
+});
+
+test('runIndexer on a csharp root whose restore fails does not start the indexer', async () => {
+  const started = [];
+  await assert.rejects(
+    () =>
+      runIndexer('csharp', `${FIXTURES}csharp-sln-repo`, { scipDotnet: '/tools/scip-dotnet' }, {
+        execFileImpl: async (bin) => {
+          started.push(bin);
+          if (bin === 'dotnet') throw new Error('Command failed: dotnet restore (exit code 1)');
+        },
+      }),
+    /dotnet restore/,
+  );
+  assert.deepEqual(started, ['dotnet']);
+});
+
+test('runIndexer on a csharp root without a solution or project fails with that reason and starts nothing', async () => {
+  let started = false;
+  await assert.rejects(
+    () =>
+      runIndexer('csharp', `${FIXTURES}empty-repo`, { scipDotnet: '/tools/scip-dotnet' }, {
+        execFileImpl: async () => {
+          started = true;
+        },
+      }),
+    /none of csharp's build files \(\*\.sln, \*\.slnx, \*\.csproj\)/,
+  );
+  assert.equal(started, false);
+});
+
 test('runIndexer rejects a language with no table row', async () => {
   await assert.rejects(() => runIndexer('go', '/repo/root', {}, { execFileImpl: async () => {} }), /unknown language "go"/);
 });

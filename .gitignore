@@ -5,3 +5,5 @@ node_modules/
 target/
 build/
 .gradle/
+__tests__/fixtures/**/obj/
+__tests__/fixtures/**/bin/

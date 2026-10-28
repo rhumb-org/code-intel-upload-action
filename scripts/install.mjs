@@ -4,11 +4,11 @@
  * compared to the value in `indexer-pins.json`; npm's own package integrity
  * check is not this action's source of truth. Every network fetch and
  * subprocess call takes an injectable seam so tests exercise the integrity
- * gate itself against controlled bytes, never a real npm registry or GitHub
- * release.
+ * gate itself against controlled bytes, never a real npm registry, GitHub
+ * release or NuGet feed.
  */
 
-import { mkdir, writeFile, chmod } from 'node:fs/promises';
+import { mkdir, writeFile, chmod, rm } from 'node:fs/promises';
 import { accessSync, constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { execFile as execFileCb } from 'node:child_process';
@@ -24,22 +24,24 @@ export class IndexerIntegrityError extends Error {}
 const RELEASE_HOST = 'github.com';
 const RUST_ANALYZER_RELEASE_PATH_PREFIX = '/rust-lang/rust-analyzer/releases/download/';
 const SCIP_JAVA_RELEASE_PATH_PREFIX = '/scip-code/scip-java/releases/download/';
+const NUGET_HOST = 'api.nuget.org';
+const SCIP_DOTNET_PACKAGE_PATH_PREFIX = '/v3-flatcontainer/scip-dotnet/';
 
 /**
  * The sha256 pin already guarantees which bytes run; this keeps the download
- * itself pointed at the indexer's official GitHub releases and nowhere else,
+ * itself pointed at the indexer's official release location and nowhere else,
  * so a mistyped or tampered pin entry cannot make the runner fetch from an
  * arbitrary host.
  */
-function assertOfficialReleaseUrl(rawUrl, indexer, pathPrefix) {
+function assertOfficialReleaseUrl(rawUrl, indexer, pathPrefix, host = RELEASE_HOST) {
   let url;
   try {
     url = new URL(rawUrl);
   } catch {
     throw new Error(`${indexer} pin url is not a valid URL: ${rawUrl}`);
   }
-  if (url.protocol !== 'https:' || url.host !== RELEASE_HOST || !url.pathname.startsWith(pathPrefix)) {
-    throw new Error(`${indexer} pin url must be an https://${RELEASE_HOST}${pathPrefix}* release asset, got ${rawUrl}`);
+  if (url.protocol !== 'https:' || url.host !== host || !url.pathname.startsWith(pathPrefix)) {
+    throw new Error(`${indexer} pin url must be an https://${host}${pathPrefix}* release asset, got ${rawUrl}`);
   }
 }
 
@@ -202,6 +204,85 @@ export async function assertJdk({ env = process.env, execFileImpl = execFile } =
     throw new Error(`Java indexing needs JDK ${MIN_JDK_MAJOR} or newer, but the runner's JDK is ${major}; ${setupHint}`);
   }
   return major;
+}
+
+/** Keeps the .NET CLI from phoning home or printing its banner in the caller's CI. */
+export const DOTNET_CLI_ENV = { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' };
+
+/** scip-dotnet ships builds for .NET 6 through 10; an older SDK cannot install it. */
+export const MIN_DOTNET_SDK_MAJOR = 6;
+
+/**
+ * Confirms the runner has a .NET SDK (`dotnet` on PATH, as `actions/setup-dotnet`
+ * leaves it). The action installs none: the repository's restore and project
+ * load need the SDK its own `global.json` asks for, which only its workflow
+ * knows. A missing or too-old SDK fails the pair here, before the download,
+ * with the reason.
+ */
+export async function assertDotnetSdk({ env = process.env, execFileImpl = execFile } = {}) {
+  const setupHint = 'add actions/setup-dotnet (the SDK your global.json asks for) to the workflow before this step';
+
+  let stdout;
+  try {
+    ({ stdout } = await execFileImpl('dotnet', ['--version'], { env: { ...env, ...DOTNET_CLI_ENV }, timeout: API_TIMEOUT_MS }));
+  } catch (err) {
+    if (err?.code === 'ENOENT') throw new Error(`C# indexing needs the .NET SDK on the runner (dotnet on PATH) and none was found; ${setupHint}`);
+    throw new Error(`C# indexing could not run \`dotnet --version\`: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const match = /^\s*(\d+)\./.exec(stdout ?? '');
+  if (match === null) {
+    throw new Error(`C# indexing could not read the .NET SDK version from \`dotnet --version\`; ${setupHint}`);
+  }
+  const major = Number(match[1]);
+  if (major < MIN_DOTNET_SDK_MAJOR) {
+    throw new Error(`C# indexing needs .NET SDK ${MIN_DOTNET_SDK_MAJOR} or newer, but the runner's SDK is ${major}; ${setupHint}`);
+  }
+  return major;
+}
+
+function xmlEscape(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Downloads the pinned scip-dotnet package from nuget.org, verifies its sha256
+ * before writing anything, and installs it as a .NET tool from that verified
+ * file alone. The install reads a generated NuGet config whose only source is
+ * the directory holding the verified package, so neither nuget.org nor a
+ * feed in the repository's own NuGet.config can supply a different
+ * scip-dotnet@version. Returns the tool's launcher path.
+ */
+export async function installScipDotnet(pin, binDir, { fetchImpl = fetch, execFileImpl = execFile } = {}) {
+  assertOfficialReleaseUrl(pin.url, 'scip-dotnet', SCIP_DOTNET_PACKAGE_PATH_PREFIX, NUGET_HOST);
+
+  const resp = await fetchImpl(pin.url, { signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) });
+  if (!resp.ok) throw new Error(`scip-dotnet package fetch failed: ${pin.url} -> ${resp.status}`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+
+  const actual = sha256HexOfBuffer(buf);
+  if (actual !== pin.sha256) {
+    throw new IndexerIntegrityError(`scip-dotnet ${pin.version}: downloaded package sha256 ${actual} does not match pinned ${pin.sha256}`);
+  }
+
+  const sourceDir = path.join(binDir, 'scip-dotnet-package');
+  const toolDir = path.join(binDir, 'scip-dotnet-tool');
+  const configPath = path.join(binDir, 'scip-dotnet-nuget.config');
+  await rm(toolDir, { recursive: true, force: true });
+  await mkdir(sourceDir, { recursive: true });
+  await writeFile(path.join(sourceDir, `scip-dotnet.${pin.version}.nupkg`), buf);
+  await writeFile(
+    configPath,
+    `<?xml version="1.0" encoding="utf-8"?>\n<configuration>\n  <packageSources>\n    <clear />\n    <add key="verified" value="${xmlEscape(sourceDir)}" />\n  </packageSources>\n</configuration>\n`,
+  );
+
+  await execFileImpl(
+    'dotnet',
+    ['tool', 'install', 'scip-dotnet', '--version', pin.version, '--tool-path', toolDir, '--configfile', configPath],
+    { env: { ...process.env, ...DOTNET_CLI_ENV }, timeout: NPM_INSTALL_TIMEOUT_MS },
+  );
+
+  return path.join(toolDir, 'scip-dotnet');
 }
 
 const PLATFORM_KEY_BY_NODE_TRIPLE = {

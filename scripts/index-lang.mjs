@@ -1,7 +1,7 @@
 /**
  * index-lang.mjs -- runs one SCIP indexer over one root. The command line
- * for each language is its row in languages.mjs: TypeScript, Python and Java
- * run with `cwd` set to the project root (they read tsconfig.json /
+ * for each language is its row in languages.mjs: TypeScript, Python, Java and
+ * C# run with `cwd` set to the project root (they read tsconfig.json /
  * pyproject.toml / the Maven or Gradle build from cwd); rust-analyzer takes
  * the root as its own positional argument instead, per its own CLI shape.
  *
@@ -90,6 +90,9 @@ function keepMessageTail(err) {
  * A root of such a language must carry one of its build markers: declared
  * roots are the user's word, but an indexer run over a directory with no
  * build would only fail with the build tool's own message.
+ *
+ * A row's `prepare` steps (C#'s `dotnet restore`) run first, each under the
+ * same timeout as the indexer; the first failure fails the root.
  */
 export async function runIndexer(lang, absoluteRootDir, bins, { project, outputDir, execFileImpl = execFile } = {}) {
   const def = languageDef(lang);
@@ -99,12 +102,20 @@ export async function runIndexer(lang, absoluteRootDir, bins, { project, outputD
   }
 
   const output = path.join(outputDir ?? absoluteRootDir, SCIP_OUTPUT_NAME);
-  const { args, cwd, maxBuffer } = def.command({ absoluteRoot: absoluteRootDir, output, project });
+  const { args, cwd, env, maxBuffer } = def.command({ absoluteRoot: absoluteRootDir, output, project });
+
+  for (const step of def.prepare?.({ absoluteRoot: absoluteRootDir }) ?? []) {
+    const stepOptions = { timeout: INDEXER_TIMEOUT_MS };
+    if (step.cwd !== undefined) stepOptions.cwd = step.cwd;
+    if (step.env !== undefined) stepOptions.env = { ...process.env, ...step.env };
+    await execFileImpl(step.file, step.args, stepOptions);
+  }
 
   const options = { timeout: INDEXER_TIMEOUT_MS };
   if (cwd !== undefined) options.cwd = cwd;
   if (maxBuffer !== undefined) options.maxBuffer = maxBuffer;
   if (def.nodeIndexer) options.env = nodeIndexerEnv();
+  if (env !== undefined) options.env = { ...(options.env ?? process.env), ...env };
   try {
     await execFileImpl(bins[def.binKey], args, options);
   } catch (err) {

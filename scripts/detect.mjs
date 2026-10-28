@@ -8,11 +8,14 @@
  * from that one marker even with no root tsconfig, so the workspace root
  * itself -- not each member -- is the root); Python's is pyproject.toml,
  * setup.py, or setup.cfg; Rust's is a Cargo.toml; Java's is a pom.xml,
- * build.gradle, build.gradle.kts, settings.gradle, or settings.gradle.kts.
- * The markers live in languages.mjs, one row per language.
+ * build.gradle, build.gradle.kts, settings.gradle, or settings.gradle.kts;
+ * C#'s is any `*.sln`, `*.slnx` or `*.csproj` file (a marker written `*.ext`
+ * matches by extension, case-insensitively). The markers live in
+ * languages.mjs, one row per language.
  *
- * Java's roots are detected here only so the run can tell the user what it
- * skipped: indexing it runs the repository's own build, so it is opt-in and
+ * Java's and C#'s roots are detected here only so the run can tell the user
+ * what it skipped: indexing them runs the repository's own build, so they are
+ * opt-in and
  * `withholdBuildRoots` removes detected roots of such languages before they
  * can be indexed.
  *
@@ -127,8 +130,23 @@ const CONTENT_VALIDATORS = {
   },
 };
 
+/** Does `dir` hold a file whose name ends with `suffix` (e.g. `.sln`), ignoring case? */
+async function dirHasFileWithSuffix(dir, suffix) {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return entries.some((entry) => !entry.isDirectory() && entry.name.toLowerCase().endsWith(suffix));
+}
+
 async function dirHasAll(dir, files) {
   for (const file of files) {
+    if (file.startsWith('*.')) {
+      if (!(await dirHasFileWithSuffix(dir, file.slice(1)))) return false;
+      continue;
+    }
     const filePath = path.join(dir, file);
     try {
       await stat(filePath);
@@ -218,7 +236,7 @@ async function walk(dir, depth, covered, visit) {
 
 /**
  * Auto-detects languages present under `repoRoot`. Returns one string[] per
- * language in languages.mjs (`{typescript, python, rust, java}`), each entry a
+ * language in languages.mjs, each entry a
  * POSIX-separated path relative to `repoRoot` ("." for the repo root
  * itself). See the module doc for the topmost-marker-wins rule that keeps
  * a nested member of an already-detected root from becoming a second one.

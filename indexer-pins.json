@@ -34,5 +34,11 @@
     "version": "0.13.1",
     "url": "https://github.com/scip-code/scip-java/releases/download/v0.13.1/scip-java-v0.13.1",
     "sha256": "a694cae143c32c5b6226362fb4bd268a8d13d3cd9b482819b3b0029a9a97b8fe"
+  },
+  "scip-dotnet": {
+    "version": "0.2.14",
+    "url": "https://api.nuget.org/v3-flatcontainer/scip-dotnet/0.2.14/scip-dotnet.0.2.14.nupkg",
+    "sha256": "e2d183fe39b9a56cb8bb2ed2d8b96828fb5434c6db084002bf8a5c6009391b52",
+    "note": "sha256 computed from the download; nuget.org publishes only SHA-512 (catalog packageHash Ss+ENj4K9k+0tV04asKNzgGcFTJRgO7p92KTHAw+4oVgcpzCiiWDiWHu9RUdzHs2AOzNPL6Pi4AZNMIQFybp2w==), which the same bytes match. The package carries net6.0 through net10.0 builds and dotnet tool install picks the one for the runner's SDK, so it runs as-is on SDK 6 to 10; DOTNET_ROLL_FORWARD=Major lets it run on a newer runtime too (checked: the net6.0 build fails without it and indexes the fixture with it, on a .NET 10 runtime)."
   }
 }
