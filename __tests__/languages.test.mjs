@@ -24,7 +24,7 @@ function escapeRegExp(text) {
 }
 
 test('every language has a complete table row', async () => {
-  assert.deepEqual(KNOWN_LANGUAGES, ['typescript', 'python', 'rust', 'java', 'csharp']);
+  assert.deepEqual(KNOWN_LANGUAGES, ['typescript', 'python', 'rust', 'java', 'csharp', 'cpp']);
   const pins = await loadIndexerPins();
   for (const lang of KNOWN_LANGUAGES) {
     const def = LANGUAGES[lang];
@@ -47,8 +47,8 @@ test('bin keys are distinct, so the installed indexers never overwrite one anoth
   assert.equal(new Set(keys).size, keys.length);
 });
 
-test('java and csharp are the build-running languages; the others are not', () => {
-  assert.deepEqual(BUILD_RUNNING_LANGUAGES, ['java', 'csharp']);
+test('java, csharp and cpp are the build-running languages; the others are not', () => {
+  assert.deepEqual(BUILD_RUNNING_LANGUAGES, ['java', 'csharp', 'cpp']);
   assert.equal(LANGUAGES.java.optInNotice, JAVA_NOTICE);
   assert.equal(LANGUAGES.csharp.optInNotice, CSHARP_NOTICE);
 });
@@ -63,12 +63,19 @@ test('the csharp row indexes with scip-dotnet at the pinned version, restoring f
   const root = path.join(FIXTURES, 'csharp-sln-repo');
   const sln = path.join(root, 'Fixture.sln');
   assert.deepEqual(def.prepare({ absoluteRoot: root }), [
-    { file: 'dotnet', args: ['restore', sln], cwd: root, env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' } },
+    {
+      file: 'dotnet',
+      args: ['restore', sln],
+      cwd: root,
+      env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' },
+      maxBuffer: 256 * 1024 * 1024,
+    },
   ]);
   assert.deepEqual(def.command({ absoluteRoot: root, output: '/out/index.scip' }), {
     args: ['index', '--output', '/out/index.scip', '--working-directory', root, '--skip-dotnet-restore', sln],
     cwd: root,
     env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1', DOTNET_ROLL_FORWARD: 'Major' },
+    maxBuffer: 256 * 1024 * 1024,
   });
 });
 

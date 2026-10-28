@@ -26,12 +26,15 @@ const RUST_ANALYZER_RELEASE_PATH_PREFIX = '/rust-lang/rust-analyzer/releases/dow
 const SCIP_JAVA_RELEASE_PATH_PREFIX = '/scip-code/scip-java/releases/download/';
 const NUGET_HOST = 'api.nuget.org';
 const SCIP_DOTNET_PACKAGE_PATH_PREFIX = '/v3-flatcontainer/scip-dotnet/';
+const SCIP_CLANG_RELEASE_PATH_PREFIX = '/sourcegraph/scip-clang/releases/download/';
+const PYPI_FILES_HOST = 'files.pythonhosted.org';
+const PYPI_FILES_PATH_PREFIX = '/packages/';
 
 /**
  * The sha256 pin already guarantees which bytes run; this keeps the download
- * itself pointed at the indexer's official release location and nowhere else,
- * so a mistyped or tampered pin entry cannot make the runner fetch from an
- * arbitrary host.
+ * itself pointed at the indexer's official release location (with `host`, the
+ * package registry's or index's file host) and nowhere else, so a mistyped or
+ * tampered pin entry cannot make the runner fetch from an arbitrary host.
  */
 function assertOfficialReleaseUrl(rawUrl, indexer, pathPrefix, host = RELEASE_HOST) {
   let url;
@@ -149,6 +152,73 @@ export async function installScipJava(pin, binDir, fetchImpl = fetch) {
   const binPath = path.join(binDir, 'scip-java');
   await writeFile(binPath, buf);
   await chmod(binPath, 0o755);
+  return binPath;
+}
+
+/**
+ * Downloads the pinned scip-clang release asset for `platformKey` (one
+ * statically-bundled executable), verifies its sha256 before writing
+ * anything, and marks it executable.
+ */
+export async function installScipClang(pin, binDir, platformKey, fetchImpl = fetch) {
+  const platform = pin.platforms[platformKey];
+  if (platform === undefined) {
+    throw new Error(`scip-clang pin has no entry for platform "${platformKey}"`);
+  }
+  assertOfficialReleaseUrl(platform.url, 'scip-clang', SCIP_CLANG_RELEASE_PATH_PREFIX);
+
+  const resp = await fetchImpl(platform.url, { signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) });
+  if (!resp.ok) throw new Error(`scip-clang asset fetch failed: ${platform.url} -> ${resp.status}`);
+  const buf = Buffer.from(await resp.arrayBuffer());
+
+  const actual = sha256HexOfBuffer(buf);
+  if (actual !== platform.sha256) {
+    throw new IndexerIntegrityError(
+      `scip-clang ${pin.version} (${platformKey}): downloaded asset sha256 ${actual} does not match pinned ${platform.sha256}`,
+    );
+  }
+
+  await mkdir(binDir, { recursive: true });
+  const binPath = path.join(binDir, 'scip-clang');
+  await writeFile(binPath, buf);
+  await chmod(binPath, 0o755);
+  return binPath;
+}
+
+/**
+ * Installs the pinned CMake wheel with `pip --require-hashes`, so pip itself
+ * refuses any bytes but the pinned sha256, into a directory of its own under
+ * `binDir` (`--target` leaves the runner's Python alone). Returns the real
+ * `cmake` executable inside the wheel, not its console-script wrapper, and
+ * confirms it reports the pinned version.
+ */
+export async function installCmake(pin, binDir, platformKey, { execFileImpl = execFile } = {}) {
+  const platform = pin.platforms[platformKey];
+  if (platform === undefined) {
+    throw new Error(`cmake pin has no entry for platform "${platformKey}"`);
+  }
+  assertOfficialReleaseUrl(platform.url, 'cmake', PYPI_FILES_PATH_PREFIX, PYPI_FILES_HOST);
+
+  const wheelDir = path.join(binDir, 'cmake-wheel');
+  const requirements = path.join(binDir, 'cmake-requirements.txt');
+  await mkdir(binDir, { recursive: true });
+  await writeFile(requirements, `cmake @ ${platform.url} --hash=sha256:${platform.sha256}\n`);
+  try {
+    await execFileImpl(
+      'python3',
+      ['-m', 'pip', 'install', '--require-hashes', '--only-binary=:all:', '--no-deps', '--disable-pip-version-check', '--target', wheelDir, '-r', requirements],
+      { timeout: NPM_INSTALL_TIMEOUT_MS },
+    );
+  } catch (err) {
+    if (err?.code === 'ENOENT') throw new Error('C/C++ indexing needs python3 with pip on the runner to install the pinned CMake; none was found');
+    throw new Error(`installing the pinned CMake ${pin.version} with pip failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const binPath = path.join(wheelDir, 'cmake', 'data', 'bin', 'cmake');
+  const { stdout } = await execFileImpl(binPath, ['--version'], { timeout: API_TIMEOUT_MS });
+  if (!new RegExp(`^cmake version ${pin.version.replace(/\./g, '\\.')}\\b`).test(String(stdout))) {
+    throw new Error(`the installed CMake does not report version ${pin.version}: ${String(stdout).split('\n')[0]}`);
+  }
   return binPath;
 }
 
@@ -291,6 +361,12 @@ const PLATFORM_KEY_BY_NODE_TRIPLE = {
   'darwin-x64': 'x86_64-apple-darwin',
   'darwin-arm64': 'aarch64-apple-darwin',
 };
+
+/** scip-clang v0.4.0 publishes a Linux x86_64 build only. */
+export function detectScipClangPlatformKey(platform = process.platform, arch = process.arch) {
+  if (platform === 'linux' && arch === 'x64') return 'x86_64-linux';
+  throw new Error(`unsupported platform for scip-clang: ${platform}-${arch}`);
+}
 
 /** Maps Node's own `process.platform`/`process.arch` to the pin file's
  *  rust target-triple platform keys. */
