@@ -10,14 +10,13 @@
  * setup.py, or setup.cfg; Rust's is a Cargo.toml; Java's is a pom.xml,
  * build.gradle, build.gradle.kts, settings.gradle, or settings.gradle.kts;
  * C#'s is any `*.sln`, `*.slnx` or `*.csproj` file (a marker written `*.ext`
- * matches by extension, case-insensitively). The markers live in
- * languages.mjs, one row per language.
+ * matches by extension, case-insensitively); C/C++'s is a CMakeLists.txt.
+ * The markers live in languages.mjs, one row per language.
  *
- * Java's and C#'s roots are detected here only so the run can tell the user
- * what it skipped: indexing them runs the repository's own build, so they are
- * opt-in and
- * `withholdBuildRoots` removes detected roots of such languages before they
- * can be indexed.
+ * Java's, C#'s and C/C++'s roots are detected here only so the run can tell
+ * the user what it skipped: indexing them runs the repository's own build, so
+ * they are opt-in and `withholdBuildRoots` removes detected roots of such
+ * languages before they can be indexed.
  *
  * TOPMOST MARKER WINS: once a directory matches a language's root marker,
  * the walk stops looking for that SAME language any further down that

@@ -40,5 +40,23 @@
     "url": "https://api.nuget.org/v3-flatcontainer/scip-dotnet/0.2.14/scip-dotnet.0.2.14.nupkg",
     "sha256": "e2d183fe39b9a56cb8bb2ed2d8b96828fb5434c6db084002bf8a5c6009391b52",
     "note": "sha256 computed from the download; nuget.org publishes only SHA-512 (catalog packageHash Ss+ENj4K9k+0tV04asKNzgGcFTJRgO7p92KTHAw+4oVgcpzCiiWDiWHu9RUdzHs2AOzNPL6Pi4AZNMIQFybp2w==), which the same bytes match. The package carries net6.0 through net10.0 builds and dotnet tool install picks the one for the runner's SDK, so it runs as-is on SDK 6 to 10; DOTNET_ROLL_FORWARD=Major lets it run on a newer runtime too (checked: the net6.0 build fails without it and indexes the fixture with it, on a .NET 10 runtime)."
+  },
+  "scip-clang": {
+    "version": "0.4.0",
+    "platforms": {
+      "x86_64-linux": {
+        "url": "https://github.com/sourcegraph/scip-clang/releases/download/v0.4.0/scip-clang-x86_64-linux",
+        "sha256": "06fd18c576f979a726c651594644ec4a35db4f471f2160b3f72eb89fa6001784"
+      }
+    }
+  },
+  "cmake": {
+    "version": "4.4.4",
+    "platforms": {
+      "x86_64-linux": {
+        "url": "https://files.pythonhosted.org/packages/7e/d5/664ea06d01864f25d6067f09fa218404e4d588edd5e495135ac91429fecb/cmake-4.4.4-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+        "sha256": "f773a0544c66370408f451acd487c2c643b0dfebb48c5d64f3638bc1bb820238"
+      }
+    }
   }
 }

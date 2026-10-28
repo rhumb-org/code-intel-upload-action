@@ -2,8 +2,10 @@ name: 'rci Code Intel: index & upload'
 description: >-
   Detects the languages present at the checked-out tree, installs the
   exact pinned SCIP indexers (verifying integrity before install), builds
-  a SCIP index per detected (language, root), and uploads each one to
-  rhumb-code-intel through its CI upload door. Fail-soft by default: an
+  a SCIP index per root, merges a language's roots into one repo-relative
+  index, and uploads one index per language to rhumb-code-intel through its
+  CI upload door. A language is uploaded only if all its roots indexed.
+  Fail-soft by default: an
   indexing or upload failure does not fail the caller's workflow unless
   the caller opts in with fail-on-error.
 author: 'rhumb-org'
@@ -34,7 +36,7 @@ inputs:
 
   fail-on-error:
     description: >-
-      When true, the step exits non-zero after every language/root has
+      When true, the step exits non-zero after every language has
       been attempted and recorded, if any of them failed to index or
       upload (or roots/pins could not be resolved). Default false: the
       action is fail-soft and does not fail the caller's workflow. Opt in
@@ -54,16 +56,16 @@ inputs:
 
 outputs:
   upload-ids:
-    description: 'JSON object mapping "<language> @ <root>" -> upload id (or null when skipped/failed before an id was minted).'
+    description: 'JSON object mapping "<language>" -> upload id (or null when failed before an id was minted).'
     value: ${{ steps.rci.outputs.upload-ids }}
   bytes:
-    description: 'JSON object mapping "<language> @ <root>" -> {raw_bytes, compressed_bytes}.'
+    description: 'JSON object mapping "<language>" -> {raw_bytes, compressed_bytes} of the merged index.'
     value: ${{ steps.rci.outputs.bytes }}
   durations-ms:
-    description: 'JSON object mapping "<language> @ <root>" -> total pipeline duration in milliseconds.'
+    description: 'JSON object mapping "<language>" -> duration in milliseconds of the language''s whole pipeline (every root, merge, upload).'
     value: ${{ steps.rci.outputs.durations-ms }}
   verify-statuses:
-    description: 'JSON object mapping "<language> @ <root>" -> {status, rejection_reason?} as last seen while verifying. Empty unless verify-timeout is set.'
+    description: 'JSON object mapping "<language>" -> {status, rejection_reason?} as last seen while verifying. Empty unless verify-timeout is set.'
     value: ${{ steps.rci.outputs.verify-statuses }}
 
 runs:

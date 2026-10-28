@@ -1,9 +1,10 @@
 name: index-fixtures
 
-# Manual proof that the Java and C# legs index real builds and upload the
-# result. They run scip-java and scip-dotnet, which download build
-# dependencies, so this has no push or pull_request trigger: dispatch it by
-# hand when one of those legs changes.
+# Manual proof that the build-running legs index real builds and upload the
+# result: Java (scip-java over Maven and Gradle), C# (scip-dotnet after a
+# dotnet restore) and C/C++ (a CMake configure and build, then scip-clang, a
+# 142 MB download). They download build dependencies, so this has no push or
+# pull_request trigger: dispatch it by hand when one of those legs changes.
 on:
   workflow_dispatch:
 
@@ -30,7 +31,7 @@ jobs:
         with:
           fail-on-error: 'true'
           roots-override: >-
-            {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"],"csharp":[]}
+            {"typescript":[],"python":[],"rust":[],"java":["__tests__/fixtures/java-maven-repo","__tests__/fixtures/java-gradle-repo"],"csharp":[],"cpp":[]}
 
   csharp:
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
@@ -48,4 +49,19 @@ jobs:
         with:
           fail-on-error: 'true'
           roots-override: >-
-            {"typescript":[],"python":[],"rust":[],"java":[],"csharp":["__tests__/fixtures/csharp-sln-repo"]}
+            {"typescript":[],"python":[],"rust":[],"java":[],"csharp":["__tests__/fixtures/csharp-sln-repo"],"cpp":[]}
+
+  cpp:
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The fixture is a library and a caller in another file. The runner image
+      # supplies the compiler and make; the action installs the pinned CMake
+      # and scip-clang itself.
+      - name: Index the CMake fixture
+        uses: ./
+        with:
+          fail-on-error: 'true'
+          roots-override: >-
+            {"typescript":[],"python":[],"rust":[],"java":[],"csharp":[],"cpp":["__tests__/fixtures/cpp-cmake-repo"]}

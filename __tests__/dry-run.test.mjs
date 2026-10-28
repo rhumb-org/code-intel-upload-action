@@ -67,6 +67,22 @@ test('dry-run shows the project file a .rci-index.yml root names', async () => {
   assert.match(stdout, /typescript @ \. \(project tsconfig\.graph\.json\)/);
 });
 
+test('dry-run makes one POST per language that names every root of it', async () => {
+  const { stdout } = await execFileP('node', [RUN_SCRIPT], {
+    env: baseEnv({
+      GITHUB_WORKSPACE: EMPTY_FIXTURE,
+      RCI_ROOTS_OVERRIDE: JSON.stringify({ typescript: ['packages/api', { path: 'packages/web', project: 'tsconfig.app.json' }], python: ['svc'] }),
+    }),
+    timeout: 15_000,
+  });
+  assert.match(stdout, /## typescript @ packages\/api, packages\/web \(project tsconfig\.app\.json\)/);
+  assert.match(stdout, /"lang":"typescript","roots":\["packages\/api","packages\/web"\]/);
+  // Without GITHUB_STEP_SUMMARY the summary is echoed to stdout a second time.
+  const posts = new Set(stdout.split('\n').filter((line) => /^POST .*"lang"/.test(line)));
+  assert.equal(posts.size, 2, 'one create per language');
+  assert.match(stdout, /one repo-relative index for all typescript roots/);
+});
+
 test('dry-run accepts the object form in the roots-override input too', async () => {
   const { stdout } = await execFileP('node', [RUN_SCRIPT], {
     env: baseEnv({
