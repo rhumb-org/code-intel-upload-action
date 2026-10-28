@@ -37,11 +37,12 @@
 
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readFile, mkdir } from 'node:fs/promises';
-import { detectRoots, mergeRoots } from './detect.mjs';
+import os from 'node:os';
+import { readFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { detectRoots, mergeRoots, withholdBuildRoots } from './detect.mjs';
 import { loadRciIndexConfig, normalizeRootEntry } from './rci-index-config.mjs';
 import { loadIndexerPins } from './pins.mjs';
-import { installNpmIndexer, installRustAnalyzer, detectRustAnalyzerPlatformKey } from './install.mjs';
+import { LANGUAGES, KNOWN_LANGUAGES, languageDef } from './languages.mjs';
 import { runIndexer } from './index-lang.mjs';
 import { UploadDoorClient, describeFailureForDoor } from './door-client.mjs';
 import { uploadIndex } from './upload.mjs';
@@ -49,7 +50,6 @@ import { writeGithubOutput, appendStepSummary } from './gh-output.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ACTION_ROOT = path.resolve(__dirname, '..');
-const KNOWN_LANGUAGES = ['typescript', 'python', 'rust'];
 const DEFAULT_BASE_URL = 'https://rhumb.sh';
 
 const EMPTY_OUTPUTS = { 'upload-ids': '{}', bytes: '{}', 'durations-ms': '{}' };
@@ -78,10 +78,18 @@ function validateRootsShape(obj, sourceLabel) {
   }
 }
 
+/**
+ * Resolves the roots to index, and the roots withheld as opt-in: a language
+ * that runs the repository's build (Java) is indexed only when
+ * `.rci-index.yml` or `roots-override` names it (an explicit `[]` included --
+ * that is a decision, not an omission), so a detected root of it that nothing
+ * declares is reported as skipped instead.
+ */
 async function resolveRoots(repoRoot, rootsOverrideRaw) {
-  const detected = await detectRoots(repoRoot);
+  const { roots: detected, withheld } = withholdBuildRoots(await detectRoots(repoRoot));
   const fromConfig = await loadRciIndexConfig(repoRoot);
   let merged = mergeRoots(detected, fromConfig);
+  for (const lang of Object.keys(fromConfig ?? {})) delete withheld[lang];
 
   if (rootsOverrideRaw.trim().length > 0) {
     let override;
@@ -92,9 +100,16 @@ async function resolveRoots(repoRoot, rootsOverrideRaw) {
     }
     validateRootsShape(override, 'roots-override input');
     merged = mergeRoots(merged, override);
+    for (const lang of Object.keys(override)) delete withheld[lang];
   }
 
-  return merged;
+  return { roots: merged, withheld };
+}
+
+function skippedLines(withheld) {
+  return Object.entries(withheld).flatMap(([lang, langRoots]) =>
+    langRoots.map((root) => `SKIPPED  ${lang} @ ${root}: ${LANGUAGES[lang].optInNotice}`),
+  );
 }
 
 function languagesWithRoots(roots) {
@@ -108,23 +123,9 @@ async function loadActionVersion() {
   return `code-intel-action@${pkg.version}`;
 }
 
-function indexerNameFor(lang) {
-  return { typescript: 'scip-typescript', python: 'scip-python', rust: 'rust-analyzer' }[lang];
-}
-
-function indexerVersionFor(lang, pins) {
-  if (lang === 'rust') return pins['rust-analyzer']?.releaseTag ?? '';
-  return pins[`scip-${lang}`]?.version ?? '';
-}
-
-async function installIndexerFor(lang, pins, binDir) {
-  if (lang === 'typescript') return { scipTypescript: await installNpmIndexer(pins['scip-typescript'], binDir) };
-  if (lang === 'python') return { scipPython: await installNpmIndexer(pins['scip-python'], binDir) };
-  if (lang === 'rust') {
-    const platformKey = detectRustAnalyzerPlatformKey();
-    return { rustAnalyzer: await installRustAnalyzer(pins['rust-analyzer'], binDir, platformKey) };
-  }
-  throw new Error(`unknown language "${lang}"`);
+export async function installIndexerFor(lang, pins, binDir) {
+  const def = languageDef(lang);
+  return { [def.binKey]: await def.install(pins, binDir) };
 }
 
 function messageOf(err) {
@@ -172,18 +173,28 @@ export async function processRoot({
   }
   const upload = { uploadId: created.body.upload_id, putUrl: created.body.put_url, maxBytes: created.body.max_bytes };
 
+  // A language that runs the repository's build writes its index outside the
+  // checkout, so the build never sees it.
+  let scratchDir;
   try {
     const bins = await ensureInstalled();
-    const scipPath = await runIndexerImpl(lang, absoluteRoot, bins, { project });
+    const indexerOptions = { project };
+    if (LANGUAGES[lang]?.runsBuild) {
+      scratchDir = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'rci-index-'));
+      indexerOptions.outputDir = scratchDir;
+    }
+    const scipPath = await runIndexerImpl(lang, absoluteRoot, bins, indexerOptions);
     const result = await uploadIndexImpl(door, lang, scipPath, meta, upload);
     return { label, result };
   } catch (err) {
     await door.failUpload(upload.uploadId, describeFailureForDoor(err));
     return { label, result: { lang, status: 'failed', uploadId: upload.uploadId, reason: messageOf(err), recorded: true } };
+  } finally {
+    if (scratchDir !== undefined) await rm(scratchDir, { recursive: true, force: true });
   }
 }
 
-async function runDryRun(baseUrl, roots) {
+async function runDryRun(baseUrl, roots, withheld) {
   const languages = languagesWithRoots(roots);
   const lines = ['# code-intel-action -- dry run', '', 'No network calls made. Detected languages and roots, and the request sequence a real run would make:', ''];
 
@@ -202,6 +213,9 @@ async function runDryRun(baseUrl, roots) {
     }
   }
 
+  const skipped = skippedLines(withheld);
+  if (skipped.length > 0) lines.push(...skipped, '');
+
   const summary = lines.join('\n');
   console.log(summary);
   await appendStepSummary(summary);
@@ -219,8 +233,9 @@ async function main() {
   };
 
   let roots;
+  let withheld;
   try {
-    roots = await resolveRoots(repoRoot, env('RCI_ROOTS_OVERRIDE', ''));
+    ({ roots, withheld } = await resolveRoots(repoRoot, env('RCI_ROOTS_OVERRIDE', '')));
   } catch (err) {
     await appendStepSummary(`# code-intel-action\n\nFAILED to resolve languages/roots: ${messageOf(err)}`);
     markFailed();
@@ -229,7 +244,7 @@ async function main() {
   }
 
   if (dryRun) {
-    await runDryRun(baseUrl, roots);
+    await runDryRun(baseUrl, roots, withheld);
     return;
   }
 
@@ -240,7 +255,7 @@ async function main() {
   const durationsMs = {};
 
   if (languages.length === 0) {
-    summaryLines.push('No indexable language detected under this checkout -- nothing to index or upload.');
+    summaryLines.push('No indexable language detected under this checkout -- nothing to index or upload.', ...skippedLines(withheld));
     await appendStepSummary(summaryLines.join('\n'));
     await writeGithubOutput(EMPTY_OUTPUTS);
     return;
@@ -280,7 +295,7 @@ async function main() {
           }
           return installedBins[lang];
         },
-        meta: { indexerName: indexerNameFor(lang), indexerVersion: indexerVersionFor(lang, pins), actionVersion },
+        meta: { indexerName: LANGUAGES[lang].indexerName, indexerVersion: LANGUAGES[lang].indexerVersion(pins), actionVersion },
       });
 
       uploadIds[label] = result.uploadId ?? null;
@@ -299,6 +314,7 @@ async function main() {
     }
   }
 
+  summaryLines.push(...skippedLines(withheld));
   await appendStepSummary(summaryLines.join('\n'));
   await writeGithubOutput({
     'upload-ids': JSON.stringify(uploadIds),

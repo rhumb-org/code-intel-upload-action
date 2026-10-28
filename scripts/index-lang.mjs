@@ -1,10 +1,9 @@
 /**
- * index-lang.mjs -- runs one SCIP indexer over one root. TypeScript and
- * Python run with `cwd` set to the project root (scip-typescript and
- * scip-python read tsconfig.json / pyproject.toml from cwd, unless a
- * TypeScript root names its project file or declares a pnpm workspace);
- * rust-analyzer takes the root as its own positional argument instead,
- * per its own CLI shape.
+ * index-lang.mjs -- runs one SCIP indexer over one root. The command line
+ * for each language is its row in languages.mjs: TypeScript, Python and Java
+ * run with `cwd` set to the project root (they read tsconfig.json /
+ * pyproject.toml / the Maven or Gradle build from cwd); rust-analyzer takes
+ * the root as its own positional argument instead, per its own CLI shape.
  *
  * HEAP SIZING. scip-typescript and scip-python are themselves Node
  * processes that build a full type-checked program over the target root --
@@ -25,8 +24,9 @@ import { execFile as execFileCb } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
-import { existsSync } from 'node:fs';
 import { INDEXER_TIMEOUT_MS } from './timeouts.mjs';
+import { languageDef } from './languages.mjs';
+import { dirHasAnyAlternative } from './detect.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -64,36 +64,32 @@ function nodeIndexerEnv(totalMemBytes) {
 }
 
 /**
- * `project` (TypeScript only) is a project file path relative to the root,
- * passed as scip-typescript's positional project argument; without it
- * a pnpm workspace marker selects all its members; other roots use
- * `<root>/tsconfig.json`. An explicit project takes precedence over the
- * workspace marker and is resolved against the root.
+ * `project` (TypeScript only) is a project file path relative to the root;
+ * see the typescript row in languages.mjs.
+ *
+ * The index lands in `<outputDir>/index.scip`, `outputDir` defaulting to the
+ * root. A language that runs the repository's build gets a caller-supplied
+ * scratch directory instead, so its build never sees (or cleans away) the
+ * index.
+ *
+ * A root of such a language must carry one of its build markers: declared
+ * roots are the user's word, but an indexer run over a directory with no
+ * build would only fail with the build tool's own message.
  */
-export async function runIndexer(lang, absoluteRootDir, bins, { project, execFileImpl = execFile } = {}) {
-  const output = path.join(absoluteRootDir, SCIP_OUTPUT_NAME);
-
-  if (lang === 'typescript') {
-    const projectArgs = project === undefined ? [] : [project];
-    if (project === undefined && existsSync(path.join(absoluteRootDir, 'pnpm-workspace.yaml'))) {
-      projectArgs.push('--pnpm-workspaces');
-    }
-    await execFileImpl(bins.scipTypescript, ['index', '--output', output, ...projectArgs], {
-      cwd: absoluteRootDir,
-      env: nodeIndexerEnv(),
-      timeout: INDEXER_TIMEOUT_MS,
-    });
-  } else if (lang === 'python') {
-    await execFileImpl(bins.scipPython, ['index', '--output', output], {
-      cwd: absoluteRootDir,
-      env: nodeIndexerEnv(),
-      timeout: INDEXER_TIMEOUT_MS,
-    });
-  } else if (lang === 'rust') {
-    await execFileImpl(bins.rustAnalyzer, ['scip', absoluteRootDir, '--output', output], { timeout: INDEXER_TIMEOUT_MS });
-  } else {
-    throw new Error(`unknown language "${lang}"`);
+export async function runIndexer(lang, absoluteRootDir, bins, { project, outputDir, execFileImpl = execFile } = {}) {
+  const def = languageDef(lang);
+  if (def.runsBuild && !(await dirHasAnyAlternative(absoluteRootDir, def.markers))) {
+    const wanted = def.markers.map((group) => group.join(' + ')).join(', ');
+    throw new Error(`the root has none of ${lang}'s build files (${wanted}); declare the directory that holds the build`);
   }
+
+  const output = path.join(outputDir ?? absoluteRootDir, SCIP_OUTPUT_NAME);
+  const { args, cwd } = def.command({ absoluteRoot: absoluteRootDir, output, project });
+
+  const options = { timeout: INDEXER_TIMEOUT_MS };
+  if (cwd !== undefined) options.cwd = cwd;
+  if (def.nodeIndexer) options.env = nodeIndexerEnv();
+  await execFileImpl(bins[def.binKey], args, options);
 
   return output;
 }

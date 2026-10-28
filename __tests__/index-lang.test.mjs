@@ -89,6 +89,39 @@ test('runIndexer writes the index to SCIP_OUTPUT_NAME under the root for every l
   assert.ok(calls[0].args.includes(`/repo/root/${SCIP_OUTPUT_NAME}`));
 });
 
+const FIXTURES = fileURLToPath(new URL('./fixtures/', import.meta.url));
+
+test('runIndexer runs scip-java in the build root, writing into the given output dir, bounded and without a Node heap', async () => {
+  const root = `${FIXTURES}java-maven-repo`;
+  const calls = [];
+  const output = await runIndexer('java', root, { scipJava: '/bin/scip-java' }, {
+    outputDir: '/scratch/pair',
+    execFileImpl: async (bin, args, opts) => calls.push({ bin, args, opts }),
+  });
+  assert.equal(output, `/scratch/pair/${SCIP_OUTPUT_NAME}`);
+  assert.deepEqual(calls, [
+    { bin: '/bin/scip-java', args: ['index', '--output', `/scratch/pair/${SCIP_OUTPUT_NAME}`], opts: { cwd: root, timeout: INDEXER_TIMEOUT_MS } },
+  ]);
+});
+
+test('runIndexer on a java root without a build file fails with that reason and starts nothing', async () => {
+  let started = false;
+  await assert.rejects(
+    () =>
+      runIndexer('java', `${FIXTURES}empty-repo`, { scipJava: '/bin/scip-java' }, {
+        execFileImpl: async () => {
+          started = true;
+        },
+      }),
+    /none of java's build files \(pom\.xml, build\.gradle, build\.gradle\.kts, settings\.gradle, settings\.gradle\.kts\)/,
+  );
+  assert.equal(started, false);
+});
+
+test('runIndexer rejects a language with no table row', async () => {
+  await assert.rejects(() => runIndexer('go', '/repo/root', {}, { execFileImpl: async () => {} }), /unknown language "go"/);
+});
+
 test('runIndexer without a project runs bare `index` -- scip-typescript resolves <root>/tsconfig.json itself', async () => {
   const calls = [];
   const execFileImpl = async (bin, args, opts) => {

@@ -35,7 +35,7 @@ test('finds nested monorepo roots and does not detect typescript from package.js
 
 test('reports nothing for a repo with no recognized markers', async () => {
   const roots = await detectRoots(path.join(FIXTURES, 'empty-repo'));
-  assert.deepEqual(roots, { typescript: [], python: [], rust: [] });
+  assert.deepEqual(roots, { typescript: [], python: [], rust: [], java: [] });
 });
 
 // Topmost marker wins: a workspace/project root is ONE index root; a nested

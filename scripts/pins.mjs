@@ -2,7 +2,8 @@
  * pins.mjs -- loads `indexer-pins.json`, shipped in this repository next to
  * the action, which pins every indexer this action installs: npm version +
  * integrity for the two Node indexers, release tag + per-platform URL +
- * sha256 for rust-analyzer. The pins travel with the action's own tag, so
+ * sha256 for rust-analyzer, version + URL + sha256 of the one
+ * platform-independent scip-java asset. The pins travel with the action's own tag, so
  * what a workflow installs is decided by the action version it references --
  * never by the `base-url` host, which only ever receives uploads.
  */
@@ -37,6 +38,10 @@ function validatePins(pins) {
     requireString(entry?.url, `rust-analyzer.platforms.${platform}.url`);
     requireString(entry?.sha256, `rust-analyzer.platforms.${platform}.sha256`);
   }
+  const java = pins?.['scip-java'];
+  requireString(java?.version, 'scip-java.version');
+  requireString(java?.url, 'scip-java.url');
+  requireString(java?.sha256, 'scip-java.sha256');
   return pins;
 }
 

@@ -2,9 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { loadIndexerPins } from '../scripts/pins.mjs';
-import { installRustAnalyzer } from '../scripts/install.mjs';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { loadIndexerPins, PINS_PATH } from '../scripts/pins.mjs';
+import { installRustAnalyzer, installScipJava } from '../scripts/install.mjs';
 
 test('the shipped indexer-pins.json loads and carries a pin for every supported indexer and platform', async () => {
   const pins = await loadIndexerPins();
@@ -33,6 +33,28 @@ test('every shipped rust-analyzer pin URL passes the official-host check and nam
       () => installRustAnalyzer(pin, os.tmpdir(), platformKey, async () => ({ ok: false, status: 599 })),
       /asset fetch failed: .* -> 599/,
     );
+  }
+});
+
+test('the scip-java pin is one official github.com release asset for the pinned version, with a sha256', async () => {
+  const pin = (await loadIndexerPins())['scip-java'];
+  assert.match(pin.version, /^\d+\.\d+\.\d+$/);
+  assert.match(pin.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(pin.url, `https://github.com/scip-code/scip-java/releases/download/v${pin.version}/scip-java-v${pin.version}`);
+  // The host check runs before the fetch, so a refusing fetch seam proves it passed.
+  await assert.rejects(() => installScipJava(pin, os.tmpdir(), async () => ({ ok: false, status: 599 })), /asset fetch failed: .* -> 599/);
+});
+
+test('loadIndexerPins rejects a pin file without the scip-java pin', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rci-pins-'));
+  try {
+    const pins = JSON.parse(await readFile(PINS_PATH, 'utf8'));
+    delete pins['scip-java'].sha256;
+    const file = path.join(dir, 'indexer-pins.json');
+    await writeFile(file, JSON.stringify(pins));
+    await assert.rejects(() => loadIndexerPins(file), /scip-java\.sha256/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

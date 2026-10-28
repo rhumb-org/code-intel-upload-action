@@ -29,5 +29,10 @@
         "sha256": "0fb2229496105666460d22d062a55e154c862bb8004c464a38c6ffaff6fd68fe"
       }
     }
+  },
+  "scip-java": {
+    "version": "0.13.1",
+    "url": "https://github.com/scip-code/scip-java/releases/download/v0.13.1/scip-java-v0.13.1",
+    "sha256": "a694cae143c32c5b6226362fb4bd268a8d13d3cd9b482819b3b0029a9a97b8fe"
   }
 }

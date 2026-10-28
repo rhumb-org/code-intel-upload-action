@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { processRoot } from '../scripts/run.mjs';
+import { stat } from 'node:fs/promises';
+import { processRoot, installIndexerFor } from '../scripts/run.mjs';
 
 function fakeDoor({ createResp = { status: 201, body: { upload_id: 'up_1', put_url: 'https://x/put', max_bytes: 1e9 } } } = {}) {
   const calls = { create: [], fail: [] };
@@ -169,6 +170,72 @@ test('processRoot: the happy path threads the created upload into uploadIndex', 
   assert.deepEqual(uploadIndexArgs.upload, { uploadId: 'up_1', putUrl: 'https://x/put', maxBytes: 1e9 });
   assert.equal(result.status, 'uploaded');
   assert.equal(result.uploadId, 'up_1');
+});
+
+test('processRoot: a build-running language writes its index to a scratch dir outside the checkout, removed afterwards', async () => {
+  let outputDir;
+  const { result } = await processRoot({
+    door: fakeDoor(),
+    lang: 'java',
+    root: 'svc',
+    absoluteRoot: '/repo/svc',
+    ensureInstalled: async () => ({ scipJava: '/fake/scip-java' }),
+    meta: {},
+    runIndexerImpl: async (lang, absoluteRoot, bins, opts) => {
+      outputDir = opts.outputDir;
+      assert.equal((await stat(outputDir)).isDirectory(), true);
+      return `${outputDir}/index.scip`;
+    },
+    uploadIndexImpl: async (d, lang) => ({ lang, status: 'uploaded', uploadId: 'up_1' }),
+  });
+
+  assert.equal(result.status, 'uploaded');
+  assert.ok(!outputDir.startsWith('/repo'), 'the scratch dir is not inside the checkout');
+  await assert.rejects(() => stat(outputDir), { code: 'ENOENT' });
+});
+
+test('processRoot: a failed java pair is recorded as FAILED against its upload and its scratch dir is still removed', async () => {
+  const door = fakeDoor();
+  let outputDir;
+  const { label, result } = await processRoot({
+    door,
+    lang: 'java',
+    root: 'svc',
+    absoluteRoot: '/repo/svc',
+    ensureInstalled: async () => ({ scipJava: '/fake/scip-java' }),
+    meta: {},
+    runIndexerImpl: async (lang, absoluteRoot, bins, opts) => {
+      outputDir = opts.outputDir;
+      throw childExitError({ code: 1, stderr: 'BUILD FAILURE' });
+    },
+  });
+
+  assert.equal(label, 'java @ svc');
+  assert.equal(result.status, 'failed');
+  assert.equal(result.recorded, true);
+  assert.match(door.calls.fail[0].reason, /exit code 1/);
+  await assert.rejects(() => stat(outputDir), { code: 'ENOENT' });
+});
+
+test('processRoot: a JDK that is missing or too old fails the java pair with that reason', async () => {
+  const door = fakeDoor();
+  const { result } = await processRoot({
+    door,
+    lang: 'java',
+    root: '.',
+    absoluteRoot: '/repo',
+    ensureInstalled: async () => {
+      throw new Error("Java indexing needs JDK 17 or newer, but the runner's JDK is 11; add actions/setup-java (JDK 17 or newer) to the workflow before this step");
+    },
+    meta: {},
+  });
+  assert.equal(result.status, 'failed');
+  assert.match(result.reason, /needs JDK 17 or newer/);
+  assert.match(door.calls.fail[0].reason, /needs JDK 17 or newer/);
+});
+
+test('installIndexerFor rejects a language with no table row', async () => {
+  await assert.rejects(() => installIndexerFor('go', {}, '/bins'), /unknown language "go"/);
 });
 
 test("processRoot: a root's project file reaches the indexer; a bare root passes none", async () => {
