@@ -44,6 +44,15 @@ inputs:
       upload shows as a red check without blocking merges.
     required: false
     default: 'false'
+  verify-timeout:
+    description: >-
+      Seconds to keep the step running after the uploads, polling each one
+      until Rhumb's worker has published or rejected it, so fail-on-error can
+      see a rejection recorded after the upload completed. Default 0: no
+      polling. Polling holds the runner, so it spends your runner minutes
+      for up to this many seconds.
+    required: false
+    default: '0'
 
 outputs:
   upload-ids:
@@ -55,6 +64,9 @@ outputs:
   durations-ms:
     description: 'JSON object mapping "<language>" -> duration in milliseconds of the language''s whole pipeline (every root, merge, upload).'
     value: ${{ steps.rci.outputs.durations-ms }}
+  verify-statuses:
+    description: 'JSON object mapping "<language>" -> {status, rejection_reason?} as last seen while verifying. Empty unless verify-timeout is set.'
+    value: ${{ steps.rci.outputs.verify-statuses }}
 
 runs:
   using: 'composite'
@@ -72,4 +84,5 @@ runs:
         RCI_ROOTS_OVERRIDE: ${{ inputs.roots-override }}
         RCI_DRY_RUN: ${{ inputs.dry-run }}
         RCI_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        RCI_VERIFY_TIMEOUT: ${{ inputs.verify-timeout }}
       run: node "${{ github.action_path }}/scripts/run.mjs"

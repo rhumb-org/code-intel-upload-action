@@ -89,6 +89,11 @@ export class UploadDoorClient {
       resp = await this.#send(method, url, this.#jwt, body);
     }
 
+    // The re-mint allowance is for consecutive 401s only: a token that expires
+    // again minutes later (a long verify poll) is a fresh expiry, not a door
+    // rejecting this identity.
+    if (resp.status !== 401) this.#remintedOnce = false;
+
     const text = await resp.text();
     let parsed;
     try {
@@ -105,6 +110,10 @@ export class UploadDoorClient {
 
   async completeUpload(uploadId, payload) {
     return this.#authedRequest('POST', `/api/code-intel/v1/uploads/${uploadId}/complete`, payload);
+  }
+
+  async statusUpload(uploadId) {
+    return this.#authedRequest('GET', `/api/code-intel/v1/uploads/${uploadId}`);
   }
 
   /** Best-effort: never throws -- a failure reporting a failure is not

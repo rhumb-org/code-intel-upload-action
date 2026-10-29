@@ -1,0 +1,12 @@
+{
+  "repo": "code-intel-upload-action",
+  "code_dir": ".",
+  "typecheck_cmd": "true",
+  "test_cmd": "true",
+  "fmt_cmd": "true",
+  "fmt_check_cmd": "true",
+  "lint_cmd": "true",
+  "required_bins": [],
+  "pr_create_cmd": "rhumb-runtime create-pr",
+  "_source": "auto-detected"
+}

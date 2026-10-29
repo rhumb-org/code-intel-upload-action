@@ -117,3 +117,15 @@ test('an unresolvable config exits 0 by default (fail-soft) and non-zero with fa
     (err) => err.code === 1,
   );
 });
+
+test('dry-run lists the status poll only when verify-timeout is set, and still makes no network calls', async () => {
+  const off = await execFileP('node', [RUN_SCRIPT], { env: baseEnv({ GITHUB_WORKSPACE: TS_FIXTURE }), timeout: 15_000 });
+  assert.doesNotMatch(off.stdout, /GET /);
+
+  const on = await execFileP('node', [RUN_SCRIPT], {
+    env: baseEnv({ GITHUB_WORKSPACE: TS_FIXTURE, RCI_VERIFY_TIMEOUT: '300' }),
+    timeout: 15_000,
+  });
+  assert.match(on.stdout, /GET  https:\/\/rhumb\.sh\/api\/code-intel\/v1\/uploads\/\{id\}.*300 s/);
+  assert.doesNotMatch(on.stdout, /ECONNREFUSED|ENOTFOUND|fetch failed/);
+});
